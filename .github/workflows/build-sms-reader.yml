@@ -1,0 +1,26 @@
+name: Bygg SMS Arkiv APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [sms-backup-usb]
+    paths:
+      - 'smsreader/**'
+      - 'settings.gradle'
+      - '.github/workflows/build-sms-reader.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - run: gradle :smsreader:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SMS-Arkiv-APK
+          path: smsreader/build/outputs/apk/debug/smsreader-debug.apk
