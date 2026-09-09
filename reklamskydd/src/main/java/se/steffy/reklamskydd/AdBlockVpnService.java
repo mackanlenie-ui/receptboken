@@ -83,9 +83,20 @@ public class AdBlockVpnService extends VpnService {
     private void readRules(InputStream input)throws IOException{try(BufferedReader br=new BufferedReader(new InputStreamReader(input))){String line;while((line=br.readLine())!=null){line=line.trim().toLowerCase(Locale.ROOT);if(line.isEmpty()||line.startsWith("#"))continue;String[] a=line.split("\\s+");String h=a.length>1?a[a.length-1]:a[0];if(!h.equals("localhost")&&!h.contains("#"))blocked.add(h);}}}
     private void updateRules(){
         File tmp=new File(getFilesDir(),"downloaded.tmp");
-        try{URL u=new URL("https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts");HttpsURLConnection c=(HttpsURLConnection)u.openConnection();c.setConnectTimeout(12000);c.setReadTimeout(20000);c.setRequestProperty("User-Agent","ReklamSkydd/1.0");
-            try(InputStream in=c.getInputStream();OutputStream out=new FileOutputStream(tmp)){byte[] b=new byte[8192];int n;while((n=in.read(b))>0)out.write(b,0,n);}File dst=new File(getFilesDir(),"downloaded.txt");if(dst.exists())dst.delete();if(tmp.renameTo(dst))loadRules();
-        }catch(Exception ignored){tmp.delete();}
+        String[] sources={
+                "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/pro.txt",
+                "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+        };
+        boolean wrote=false;
+        try(OutputStream out=new FileOutputStream(tmp)){
+            for(String source:sources){
+                try{URL u=new URL(source);HttpsURLConnection c=(HttpsURLConnection)u.openConnection();c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("User-Agent","ReklamSkydd/1.1");
+                    try(InputStream in=c.getInputStream()){byte[] b=new byte[16384];int n;while((n=in.read(b))>0){out.write(b,0,n);wrote=true;}out.write('\n');}
+                }catch(Exception ignored){}
+            }
+        }catch(Exception ignored){}
+        File dst=new File(getFilesDir(),"downloaded.txt");
+        if(wrote){if(dst.exists())dst.delete();if(tmp.renameTo(dst))loadRules();}else tmp.delete();
     }
     private synchronized void stopVpn(){running=false;if(loop!=null)loop.interrupt();try{if(tun!=null)tun.close();}catch(Exception ignored){}tun=null;getSharedPreferences("settings",MODE_PRIVATE).edit().putBoolean("was_running",false).apply();broadcast();stopForeground(STOP_FOREGROUND_REMOVE);}
     private void broadcast(){sendBroadcast(new Intent(ACTION_STATE).setPackage(getPackageName()));}
