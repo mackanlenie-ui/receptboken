@@ -1,0 +1,13 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'se.steffy.receptboken'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'se.steffy.receptboken'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+}
