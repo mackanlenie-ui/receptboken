@@ -1,0 +1,19 @@
+name: Bygg SMS Backup och Arkiv v2
+on: [workflow_dispatch, push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - run: gradle :smsapp:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SMS-Backup-Arkiv-v2-APK
+          path: smsapp/build/outputs/apk/debug/smsapp-debug.apk
