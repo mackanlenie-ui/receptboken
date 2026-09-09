@@ -153,8 +153,8 @@ public class MainActivity extends Activity {
     }
 
     int findTimerMinutes(String s){
-        Matcher range=Pattern.compile("(\d+)\s*[–-]\s*(\d+)\s*min",Pattern.CASE_INSENSITIVE).matcher(s);if(range.find())return Integer.parseInt(range.group(1));
-        Matcher single=Pattern.compile("(\d+)\s*min",Pattern.CASE_INSENSITIVE).matcher(s);if(single.find())return Integer.parseInt(single.group(1));
+        Matcher range=Pattern.compile("([0-9]+) *[–-] *([0-9]+) *min",Pattern.CASE_INSENSITIVE).matcher(s);if(range.find())return Integer.parseInt(range.group(1));
+        Matcher single=Pattern.compile("([0-9]+) *min",Pattern.CASE_INSENSITIVE).matcher(s);if(single.find())return Integer.parseInt(single.group(1));
         return 0;
     }
     void startTimer(int minutes){timerEndsAt=System.currentTimeMillis()+minutes*60000L;ensureTimerRunning();Toast.makeText(this,"Timer startad: "+minutes+" minuter",Toast.LENGTH_SHORT).show();}
@@ -175,9 +175,9 @@ public class MainActivity extends Activity {
         StringBuilder out=new StringBuilder();
         for(String line:src.split("\n",-1)){
             String x=line;
-            Matcher lead=Pattern.compile("^(\s*)(\d+(?:[.,]\d+)?)(.*)$").matcher(x);
+            Matcher lead=Pattern.compile("^([ ]*)([0-9]+(?:[.,][0-9]+)?)(.*)$").matcher(x);
             if(lead.matches())x=lead.group(1)+scaledNumber(lead.group(2),f)+lead.group(3);
-            Matcher par=Pattern.compile("\((\d+(?:[.,]\d+)?)([^)]*)\)").matcher(x);
+            Matcher par=Pattern.compile("[(]([0-9]+(?:[.,][0-9]+)?)([^)]*)[)]").matcher(x);
             StringBuffer sb=new StringBuffer();
             while(par.find())par.appendReplacement(sb,Matcher.quoteReplacement("("+scaledNumber(par.group(1),f)+par.group(2)+")"));
             par.appendTail(sb);out.append(sb).append('\n');
