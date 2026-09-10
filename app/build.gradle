@@ -7,7 +7,11 @@ android {
         applicationId 'se.steffy.receptboken'
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName '1.6'
+        versionCode 8
+        versionName '1.7'
     }
+}
+
+dependencies {
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
 }
