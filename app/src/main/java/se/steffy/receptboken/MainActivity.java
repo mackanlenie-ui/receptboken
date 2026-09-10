@@ -3,12 +3,20 @@ package se.steffy.receptboken;
 import android.app.*;
 import android.os.Bundle;
 import android.os.CountDownTimer;
+import android.os.ParcelFileDescriptor;
 import android.graphics.*;
+import android.graphics.pdf.PdfRenderer;
 import android.graphics.drawable.GradientDrawable;
 import android.content.*;
 import android.net.Uri;
 import android.view.*;
 import android.widget.*;
+
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+
 import org.json.*;
 import java.util.*;
 import java.util.regex.*;
@@ -16,11 +24,14 @@ import java.io.*;
 
 public class MainActivity extends Activity {
     final int BG=Color.rgb(255,248,240), CARD=Color.WHITE, ACCENT=Color.rgb(208,91,52), TEXT=Color.rgb(45,39,35), MUTED=Color.rgb(112,103,96), RED=Color.rgb(130,50,45);
-    final int PICK_IMAGE=42, EXPORT_BACKUP=43, IMPORT_BACKUP=44;
+    final int PICK_IMAGE=42, EXPORT_BACKUP=43, IMPORT_BACKUP=44, IMPORT_RECIPE=45;
+    final String[] DAYS={"Måndag","Tisdag","Onsdag","Torsdag","Fredag","Lördag","Söndag"};
+
     LinearLayout root,list;
     EditText search;
     ArrayList<Recipe> recipes=new ArrayList<>();
     ArrayList<String> shopping=new ArrayList<>();
+    LinkedHashMap<String,String> weekMenu=new LinkedHashMap<>();
     SharedPreferences prefs;
     boolean favoritesOnly=false;
     String selectedImage="", categoryFilter="Alla", sortMode="Senast";
@@ -29,11 +40,19 @@ public class MainActivity extends Activity {
     long timerEndsAt=0;
     TextView timerLabel;
 
+    TextRecognizer importRecognizer;
+    ParcelFileDescriptor importPfd;
+    PdfRenderer importRenderer;
+    StringBuilder importText;
+    Uri importUri;
+    int importPage=0, importPageLimit=0;
+
     @Override public void onCreate(Bundle b){
         super.onCreate(b);
         prefs=getSharedPreferences("recipes",0);
         load();
         loadShopping();
+        loadWeek();
         home();
     }
 
@@ -54,9 +73,17 @@ public class MainActivity extends Activity {
         base();
         title("Min receptbok");
         root.addView(txt("Vad vill du laga idag?",16,MUTED));
-        Button add=btn("＋ Nytt recept"), shop=btn("🛒 Lista ("+shopping.size()+")"), backup=btn("💾 Säkerhetskopia");
+
+        Button add=btn("＋ Nytt recept");
+        Button importBtn=btn("📷 Importera foto/PDF");
+        Button week=btn("📅 Veckomeny");
+        Button shop=btn("🛒 Lista ("+shopping.size()+")");
+        Button backup=btn("💾 Säkerhetskopia");
+
         full(add,12);
-        LinearLayout b=new LinearLayout(this);b.addView(shop,half(0,5));b.addView(backup,half(5,0));fullRow(b,6);
+        LinearLayout row1=new LinearLayout(this);row1.addView(importBtn,half(0,5));row1.addView(week,half(5,0));fullRow(row1,6);
+        LinearLayout row2=new LinearLayout(this);row2.addView(shop,half(0,5));row2.addView(backup,half(5,0));fullRow(row2,6);
+
         search=new EditText(this);search.setHint("Sök maträtt eller ingrediens…");search.setSingleLine();search.setTextSize(16);search.setPadding(dp(16),dp(12),dp(16),dp(12));
         LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2);sp.setMargins(0,dp(12),0,dp(6));root.addView(search,sp);
         categories();
@@ -64,9 +91,14 @@ public class MainActivity extends Activity {
         CheckBox fav=new CheckBox(this);fav.setText("Visa bara favoriter ★");fav.setChecked(favoritesOnly);root.addView(fav);
         list=new LinearLayout(this);list.setOrientation(LinearLayout.VERTICAL);root.addView(list);
         render("");
+
         search.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int d){}public void onTextChanged(CharSequence s,int a,int b,int c){render(s.toString());}public void afterTextChanged(android.text.Editable e){}});
         fav.setOnCheckedChangeListener((v,c)->{favoritesOnly=c;render(search.getText().toString());});
-        add.setOnClickListener(v->edit(null));shop.setOnClickListener(v->shopping());backup.setOnClickListener(v->backup());
+        add.setOnClickListener(v->edit(null));
+        importBtn.setOnClickListener(v->chooseRecipeImport());
+        week.setOnClickListener(v->weeklyMenu());
+        shop.setOnClickListener(v->shopping());
+        backup.setOnClickListener(v->backup());
         sort.setOnClickListener(v->{sortMode=sortMode.equals("Senast")?"A–Ö":sortMode.equals("A–Ö")?"Kortast tid":"Senast";home();});
     }
 
@@ -115,7 +147,7 @@ public class MainActivity extends Activity {
         fav.setOnClickListener(v->{r.fav=!r.fav;save();detail(r,amount);});edit.setOnClickListener(v->edit(r));
         cook.setOnClickListener(v->{checkedIngredients.clear();cook(r,amount,0);});
         share.setOnClickListener(v->shareRecipe(r,amount));
-        addShop.setOnClickListener(v->{for(String x:scaled.split("\n"))if(!x.trim().isEmpty())shopping.add(x.trim());saveShopping();Toast.makeText(this,"Tillagt i inköpslistan",Toast.LENGTH_SHORT).show();});
+        addShop.setOnClickListener(v->{smartAddIngredients(scaled);saveShopping();Toast.makeText(this,"Ingredienserna är tillagda och dubbletter har slagits ihop",Toast.LENGTH_SHORT).show();});
     }
 
     void checklistSection(String h,String body,HashSet<Integer> state){
@@ -187,27 +219,286 @@ public class MainActivity extends Activity {
     String scaledNumber(String n,double f){double v=Double.parseDouble(n.replace(',','.'))*f;if(Math.abs(v-Math.rint(v))<.001)return ""+(int)Math.rint(v);String x=String.format(Locale.US,"%.2f",v);while(x.endsWith("0"))x=x.substring(0,x.length()-1);if(x.endsWith("."))x=x.substring(0,x.length()-1);return x.replace('.',',');}
 
     EditText field(String hint,String val,boolean multi){EditText e=new EditText(this);e.setHint(hint);e.setText(val);e.setTextSize(16);e.setPadding(dp(12),dp(10),dp(12),dp(10));if(multi){e.setMinLines(4);e.setGravity(Gravity.TOP);}root.addView(e,new LinearLayout.LayoutParams(-1,-2));return e;}
-    void edit(Recipe old){
-        cancelTimer();base();selectedImage=old==null?"":old.image;
-        Button back=btn("‹ Avbryt");back.setOnClickListener(v->{if(old==null)home();else detail(old,old.amount);});root.addView(back,new LinearLayout.LayoutParams(-2,-2));title(old==null?"Nytt recept":"Redigera recept");
+    void edit(Recipe old){edit(old,false);}
+    void edit(Recipe old,boolean importedAsNew){
+        cancelTimer();base();
+        selectedImage=old==null?"":old.image;
+        Button back=btn("‹ Avbryt");back.setOnClickListener(v->{if(old==null||importedAsNew)home();else detail(old,old.amount);});root.addView(back,new LinearLayout.LayoutParams(-2,-2));
+        title(importedAsNew?"Importerat recept – kontrollera":old==null?"Nytt recept":"Redigera recept");
+        if(importedAsNew)root.addView(txt("Texten är automatiskt avläst. Kontrollera mängder och steg innan du sparar.",14,MUTED));
         Button image=btn(selectedImage.isEmpty()?"📷 Välj bild":"📷 Byt bild");full(image,8);
-        EditText name=field("Namn på maträtten",old==null?"":old.name,false),cat=field("Kategori",old==null?"":old.category,false),time=field("Tid i minuter",old==null?"":""+old.time,false),amount=field("Antal",old==null?"":""+old.amount,false),unit=field("Enhet, t.ex. portioner, st eller bitar",old==null?"portioner":old.unit,false),ing=field("Ingredienser – en per rad",old==null?"":old.ingredients,true),steps=field("Gör så här – steg för steg",old==null?"":old.steps,true),tips=field("Tips & förvaring (valfritt)",old==null?"":old.tips,true);
+        EditText name=field("Namn på maträtten",old==null?"":old.name,false);
+        EditText cat=field("Kategori",old==null?"":old.category,false);
+        EditText time=field("Tid i minuter",old==null?"":""+old.time,false);
+        EditText amount=field("Antal",old==null?"":""+old.amount,false);
+        EditText unit=field("Enhet, t.ex. portioner, st eller bitar",old==null?"portioner":old.unit,false);
+        EditText ing=field("Ingredienser – en per rad",old==null?"":old.ingredients,true);
+        EditText steps=field("Gör så här – steg för steg",old==null?"":old.steps,true);
+        EditText tips=field("Tips & förvaring (valfritt)",old==null?"":old.tips,true);
         Button saveBtn=btn("Spara recept");full(saveBtn,16);
-        if(old!=null){Button del=btn("Ta bort recept");del.setBackground(round(RED));full(del,2);del.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Ta bort receptet?").setNegativeButton("Avbryt",null).setPositiveButton("Ta bort",(d,w)->{recipes.remove(old);save();home();}).show());}
+        if(old!=null&&!importedAsNew){Button del=btn("Ta bort recept");del.setBackground(round(RED));full(del,2);del.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Ta bort receptet?").setNegativeButton("Avbryt",null).setPositiveButton("Ta bort",(d,w)->{recipes.remove(old);removeRecipeFromWeek(old.name);save();saveWeek();home();}).show());}
         image.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("image/*");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,PICK_IMAGE);});
-        saveBtn.setOnClickListener(v->{if(name.getText().toString().trim().isEmpty()){name.setError("Skriv ett namn");return;}Recipe r=old==null?new Recipe():old;r.name=name.getText().toString().trim();r.category=cat.getText().toString().trim();r.time=num(time,0);r.amount=Math.max(1,num(amount,1));r.unit=unit.getText().toString().trim().isEmpty()?"portioner":unit.getText().toString().trim();r.ingredients=ing.getText().toString().trim();r.steps=steps.getText().toString().trim();r.tips=tips.getText().toString().trim();r.image=selectedImage;if(old==null)recipes.add(0,r);save();detail(r,r.amount);});
+        saveBtn.setOnClickListener(v->{
+            if(name.getText().toString().trim().isEmpty()){name.setError("Skriv ett namn");return;}
+            Recipe r=(old==null||importedAsNew)?new Recipe():old;
+            String oldName=(old!=null&&!importedAsNew)?old.name:"";
+            r.name=name.getText().toString().trim();
+            r.category=cat.getText().toString().trim().isEmpty()?"Övrigt":cat.getText().toString().trim();
+            r.time=num(time,0);r.amount=Math.max(1,num(amount,1));
+            r.unit=unit.getText().toString().trim().isEmpty()?"portioner":unit.getText().toString().trim();
+            r.ingredients=ing.getText().toString().trim();r.steps=steps.getText().toString().trim();r.tips=tips.getText().toString().trim();r.image=selectedImage;
+            if(old==null||importedAsNew)recipes.add(0,r);else if(!oldName.equals(r.name))renameRecipeInWeek(oldName,r.name);
+            save();saveWeek();detail(r,r.amount);
+        });
     }
     int num(EditText e,int d){try{return Integer.parseInt(e.getText().toString());}catch(Exception x){return d;}}
 
-    @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri u=data.getData();if(req==PICK_IMAGE){try{getContentResolver().takePersistableUriPermission(u,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}selectedImage=u.toString();Toast.makeText(this,"Bilden är vald",Toast.LENGTH_SHORT).show();}else if(req==EXPORT_BACKUP)writeBackup(u);else if(req==IMPORT_BACKUP)readBackup(u);}
+    void weeklyMenu(){
+        cancelTimer();base();
+        Button back=btn("‹ Tillbaka");back.setOnClickListener(v->home());root.addView(back,new LinearLayout.LayoutParams(-2,-2));
+        title("Veckomeny");
+        root.addView(txt("Tryck på en dag för att välja maträtt.",16,MUTED));
+        for(String day:DAYS){
+            String chosen=weekMenu.get(day);if(chosen==null||chosen.trim().isEmpty())chosen="Välj recept";
+            Button b=btn(day+"  •  "+chosen);full(b,7);
+            final String d=day;b.setOnClickListener(v->showRecipePicker(d));
+        }
+        Button add=btn("🛒 Lägg veckans ingredienser till listan");full(add,16);
+        Button clear=btn("Töm veckomenyn");clear.setBackground(round(RED));full(clear,3);
+        add.setOnClickListener(v->addWeekToShopping());
+        clear.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Töm veckomenyn?").setNegativeButton("Avbryt",null).setPositiveButton("Töm",(d,w)->{weekMenu.clear();saveWeek();weeklyMenu();}).show());
+    }
 
-    void backup(){cancelTimer();base();Button back=btn("‹ Tillbaka");back.setOnClickListener(v->home());root.addView(back,new LinearLayout.LayoutParams(-2,-2));title("Säkerhetskopia");root.addView(txt("Spara alla recept, favoriter och inköpslistan i en fil. Filen kan återställas på den här eller en annan telefon.",16,MUTED));Button export=btn("Exportera säkerhetskopia"),restore=btn("Återställ från fil");full(export,18);full(restore,5);export.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"Receptboken-backup.json");startActivityForResult(i,EXPORT_BACKUP);});restore.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("application/json");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,IMPORT_BACKUP);});}
-    JSONObject backupJson(){JSONObject o=new JSONObject();JSONArray a=new JSONArray();for(Recipe r:recipes)a.put(r.json());try{o.put("version",2);o.put("recipes",a);o.put("shopping",new JSONArray(shopping));}catch(Exception ignored){}return o;}
+    void showRecipePicker(String day){
+        ArrayList<Recipe> sorted=new ArrayList<>(recipes);Collections.sort(sorted,(a,b)->a.name.compareToIgnoreCase(b.name));
+        String[] names=new String[sorted.size()+1];names[0]="— Ingen maträtt —";for(int i=0;i<sorted.size();i++)names[i+1]=sorted.get(i).name;
+        new AlertDialog.Builder(this).setTitle(day).setItems(names,(dialog,which)->{if(which==0)weekMenu.remove(day);else weekMenu.put(day,names[which]);saveWeek();weeklyMenu();}).setNegativeButton("Avbryt",null).show();
+    }
+
+    void addWeekToShopping(){
+        int addedDays=0;
+        for(String day:DAYS){
+            Recipe r=findRecipe(weekMenu.get(day));
+            if(r!=null){smartAddIngredients(r.ingredients);addedDays++;}
+        }
+        saveShopping();
+        if(addedDays==0)Toast.makeText(this,"Veckomenyn är tom",Toast.LENGTH_SHORT).show();
+        else Toast.makeText(this,"Veckans ingredienser är tillagda och dubbletter har slagits ihop",Toast.LENGTH_LONG).show();
+    }
+
+    Recipe findRecipe(String name){if(name==null)return null;for(Recipe r:recipes)if(r.name.equalsIgnoreCase(name))return r;return null;}
+    void removeRecipeFromWeek(String name){for(String d:DAYS){String n=weekMenu.get(d);if(n!=null&&n.equalsIgnoreCase(name))weekMenu.remove(d);}}
+    void renameRecipeInWeek(String oldName,String newName){for(String d:DAYS){String n=weekMenu.get(d);if(n!=null&&n.equalsIgnoreCase(oldName))weekMenu.put(d,newName);}}
+    void loadWeek(){weekMenu.clear();try{JSONObject o=new JSONObject(prefs.getString("week_menu","{}"));for(String d:DAYS){String v=o.optString(d,"");if(!v.isEmpty())weekMenu.put(d,v);}}catch(Exception ignored){}}
+    void saveWeek(){JSONObject o=new JSONObject();try{for(String d:DAYS){String v=weekMenu.get(d);if(v!=null&&!v.isEmpty())o.put(d,v);}}catch(Exception ignored){}prefs.edit().putString("week_menu",o.toString()).apply();}
+
+    void smartAddIngredients(String ingredients){for(String line:ingredients.split("\n")){String s=line.trim();if(!s.isEmpty())smartAddOne(s);}}
+    void smartAddOne(String item){
+        ShopItem incoming=ShopItem.parse(item);
+        for(int i=0;i<shopping.size();i++){
+            ShopItem old=ShopItem.parse(shopping.get(i));
+            if(old.key.equals(incoming.key)){
+                if(old.numeric&&incoming.numeric){old.qty+=incoming.qty;shopping.set(i,old.display());}
+                return;
+            }
+        }
+        shopping.add(item);
+    }
+    void mergeShopping(){
+        ArrayList<String> old=new ArrayList<>(shopping);shopping.clear();for(String s:old)smartAddOne(s);saveShopping();
+    }
+
+    void shopping(){
+        cancelTimer();base();
+        Button back=btn("‹ Tillbaka");back.setOnClickListener(v->home());root.addView(back,new LinearLayout.LayoutParams(-2,-2));title("Inköpslista");
+        if(shopping.isEmpty())root.addView(txt("Listan är tom. Lägg till ingredienser från ett recept eller veckomenyn.",16,MUTED));
+        for(String item:new ArrayList<>(shopping)){
+            CheckBox cb=new CheckBox(this);cb.setText(item);cb.setTextSize(17);cb.setPadding(dp(8),dp(8),dp(8),dp(8));root.addView(cb);
+            cb.setOnCheckedChangeListener((v,c)->{if(c){shopping.remove(item);saveShopping();root.postDelayed(()->shopping(),250);}});
+        }
+        if(!shopping.isEmpty()){
+            Button merge=btn("✨ Slå ihop dubbletter");full(merge,12);merge.setOnClickListener(v->{mergeShopping();Toast.makeText(this,"Listan är sammanslagen",Toast.LENGTH_SHORT).show();shopping();});
+            Button clear=btn("Töm inköpslistan");clear.setBackground(round(RED));full(clear,3);clear.setOnClickListener(v->{shopping.clear();saveShopping();shopping();});
+        }
+    }
+
+    void chooseRecipeImport(){
+        Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"image/*","application/pdf"});
+        startActivityForResult(i,IMPORT_RECIPE);
+    }
+
+    void importRecipeFromUri(Uri u){
+        String type=getContentResolver().getType(u);
+        if(type!=null&&type.equalsIgnoreCase("application/pdf"))importPdf(u);else importImage(u);
+    }
+
+    void importImage(Uri u){
+        Toast.makeText(this,"Läser receptet från bilden…",Toast.LENGTH_SHORT).show();
+        try{
+            final TextRecognizer rec=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            InputImage img=InputImage.fromFilePath(this,u);
+            rec.process(img).addOnSuccessListener(t->{rec.close();Recipe r=parseImportedRecipe(t.getText());r.image=u.toString();edit(r,true);})
+                    .addOnFailureListener(e->{rec.close();Toast.makeText(this,"Kunde inte läsa texten i bilden",Toast.LENGTH_LONG).show();});
+        }catch(Exception e){Toast.makeText(this,"Kunde inte öppna bilden",Toast.LENGTH_LONG).show();}
+    }
+
+    void importPdf(Uri u){
+        finishPdfImport(false);
+        Toast.makeText(this,"Läser receptet från PDF…",Toast.LENGTH_SHORT).show();
+        try{
+            importPfd=getContentResolver().openFileDescriptor(u,"r");
+            importRenderer=new PdfRenderer(importPfd);
+            importRecognizer=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            importText=new StringBuilder();importUri=u;importPage=0;importPageLimit=Math.min(importRenderer.getPageCount(),10);
+            if(importPageLimit==0){finishPdfImport(false);Toast.makeText(this,"PDF-filen är tom",Toast.LENGTH_LONG).show();return;}
+            recognizeNextPdfPage();
+        }catch(Exception e){finishPdfImport(false);Toast.makeText(this,"Kunde inte öppna PDF-filen",Toast.LENGTH_LONG).show();}
+    }
+
+    void recognizeNextPdfPage(){
+        if(importRenderer==null||importRecognizer==null)return;
+        if(importPage>=importPageLimit){
+            String text=importText==null?"":importText.toString();
+            finishPdfImport(false);
+            Recipe r=parseImportedRecipe(text);edit(r,true);return;
+        }
+        PdfRenderer.Page page=null;
+        try{
+            page=importRenderer.openPage(importPage);
+            int w=Math.max(1,page.getWidth()),h=Math.max(1,page.getHeight());
+            int targetW=Math.min(1800,Math.max(1000,w*2));int targetH=Math.max(1,(int)((double)h*targetW/w));
+            Bitmap bitmap=Bitmap.createBitmap(targetW,targetH,Bitmap.Config.ARGB_8888);bitmap.eraseColor(Color.WHITE);
+            page.render(bitmap,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);page.close();
+            InputImage image=InputImage.fromBitmap(bitmap,0);
+            importRecognizer.process(image).addOnSuccessListener(t->{if(importText!=null)importText.append(t.getText()).append("\n");bitmap.recycle();importPage++;recognizeNextPdfPage();})
+                    .addOnFailureListener(e->{bitmap.recycle();importPage++;recognizeNextPdfPage();});
+        }catch(Exception e){
+            try{if(page!=null)page.close();}catch(Exception ignored){}
+            importPage++;recognizeNextPdfPage();
+        }
+    }
+
+    void finishPdfImport(boolean clearText){
+        try{if(importRecognizer!=null)importRecognizer.close();}catch(Exception ignored){}importRecognizer=null;
+        try{if(importRenderer!=null)importRenderer.close();}catch(Exception ignored){}importRenderer=null;
+        try{if(importPfd!=null)importPfd.close();}catch(Exception ignored){}importPfd=null;
+        importUri=null;importPage=0;importPageLimit=0;if(clearText)importText=null;
+    }
+
+    Recipe parseImportedRecipe(String raw){
+        Recipe r=new Recipe();r.category="Importerat";r.amount=4;r.unit="portioner";r.time=0;
+        if(raw==null)raw="";raw=raw.replace('\r','\n').replaceAll("\n+","\n");
+        ArrayList<String> lines=new ArrayList<>();for(String x:raw.split("\n")){String s=x.trim();if(!s.isEmpty())lines.add(s);}
+        if(lines.isEmpty()){r.name="Importerat recept";r.steps="Ingen text kunde läsas. Fyll i receptet manuellt.";return r;}
+
+        r.name=pickImportedTitle(lines);
+        String lowName=r.name.toLowerCase(Locale.ROOT);if(lowName.contains("muffin")||lowName.contains("kaka")||lowName.contains("bröd"))r.category="Bakning";
+
+        Matcher tm=Pattern.compile("(?i)(?:tid|total tid|tillagningstid)[^0-9]{0,12}([0-9]{1,3}) *min").matcher(raw);if(tm.find())r.time=safeInt(tm.group(1),0);
+        Matcher am=Pattern.compile("(?i)(?:mängd|antal|portioner?)[^0-9]{0,12}([0-9]{1,3}) *([a-zåäö]+)?").matcher(raw);
+        if(am.find()){r.amount=Math.max(1,safeInt(am.group(1),4));String u=am.group(2);if(u!=null){u=u.toLowerCase(Locale.ROOT);if(u.startsWith("st"))r.unit="st";else if(u.startsWith("bit"))r.unit="bitar";else if(u.startsWith("portion"))r.unit="portioner";}}
+        else{
+            Matcher st=Pattern.compile("(?i)([0-9]{1,3}) +(st|bitar?|portioner?)").matcher(raw);
+            if(st.find()){r.amount=Math.max(1,safeInt(st.group(1),4));String u=st.group(2).toLowerCase(Locale.ROOT);r.unit=u.startsWith("st")?"st":u.startsWith("bit")?"bitar":"portioner";}
+        }
+
+        int ing=-1,steps=-1,tips=-1;
+        for(int i=0;i<lines.size();i++){
+            String l=lines.get(i).toLowerCase(Locale.ROOT);
+            if(ing<0&&l.contains("ingredienser"))ing=i;
+            if(steps<0&&(l.contains("gör så här")||l.contains("gör såhär")||l.contains("så här gör")||l.equals("tillagning")||l.contains("instruktioner")||l.contains("tillagning:")))steps=i;
+            if(tips<0&&(l.equals("tips")||l.contains("tips &")||l.contains("förvaring")))tips=i;
+        }
+
+        StringBuilder ingr=new StringBuilder();
+        if(ing>=0){
+            int end=steps>ing?steps:lines.size();
+            for(int i=ing+1;i<end;i++){
+                String s=lines.get(i);String l=s.toLowerCase(Locale.ROOT);
+                if(l.startsWith("utrustning")||l.equals("ugn")||l.startsWith("laktos")||l.startsWith("vegetar"))break;
+                if(looksIngredient(s))ingr.append(s).append("\n");
+            }
+        }
+        if(ingr.length()==0){
+            for(String s:lines)if(looksIngredient(s)&&!s.toLowerCase(Locale.ROOT).contains("min"))ingr.append(s).append("\n");
+        }
+        r.ingredients=ingr.toString().trim();
+
+        StringBuilder stp=new StringBuilder();
+        if(steps>=0){
+            int end=tips>steps?tips:lines.size();int n=1;
+            for(int i=steps+1;i<end;i++){
+                String s=lines.get(i);String l=s.toLowerCase(Locale.ROOT);
+                if(l.startsWith("näringsvär")||l.startsWith("serveringstips")||l.startsWith("variationstips"))break;
+                if(s.length()<2)continue;
+                if(s.matches("^[0-9]+[.]?$"))continue;
+                if(s.matches("^[0-9]+[.] .*"))stp.append(s);else stp.append(n++).append(". ").append(s);
+                stp.append("\n");
+            }
+        }
+        if(stp.length()==0)stp.append(raw.trim());
+        r.steps=stp.toString().trim();
+
+        if(tips>=0){
+            StringBuilder tp=new StringBuilder();for(int i=tips+1;i<lines.size();i++)tp.append(lines.get(i)).append("\n");r.tips=tp.toString().trim();
+        }
+        return r;
+    }
+
+    String pickImportedTitle(ArrayList<String> lines){
+        for(int i=0;i<Math.min(lines.size(),10);i++){
+            String s=lines.get(i),l=s.toLowerCase(Locale.ROOT);
+            if(s.length()<3||s.length()>60||s.endsWith("!"))continue;
+            if(l.contains("ingredienser")||l.contains("recept med bilder")||l.startsWith("tid:")||l.startsWith("mängd:")||l.matches("^[0-9].*")||l.contains("www.")||l.contains("http"))continue;
+            boolean metaSoon=false;
+            for(int j=i+1;j<Math.min(lines.size(),i+5);j++){String n=lines.get(j).toLowerCase(Locale.ROOT);if(n.startsWith("tid")||n.startsWith("mängd"))metaSoon=true;}
+            if(metaSoon)return s;
+        }
+        for(int i=0;i<Math.min(lines.size(),12);i++){
+            String s=lines.get(i),l=s.toLowerCase(Locale.ROOT);
+            if(s.length()<3||s.length()>70)continue;
+            if(l.contains("ingredienser")||l.contains("recept med bilder")||l.startsWith("tid:")||l.startsWith("mängd:")||l.matches("^[0-9].*")||l.contains("www.")||l.contains("http"))continue;
+            return s;
+        }
+        return "Importerat recept";
+    }
+
+    boolean looksIngredient(String s){
+        String l=s.toLowerCase(Locale.ROOT);
+        if(l.startsWith("salt")||l.startsWith("peppar"))return true;
+        return Pattern.compile("^[0-9]+(?:[.,][0-9]+)? *(?:g|kg|dl|ml|l|msk|tsk|krm|st)? +.+",Pattern.CASE_INSENSITIVE).matcher(s).matches();
+    }
+    int safeInt(String s,int d){try{return Integer.parseInt(s);}catch(Exception e){return d;}}
+
+    @Override protected void onActivityResult(int req,int result,Intent data){
+        super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri u=data.getData();
+        if(req==PICK_IMAGE){try{getContentResolver().takePersistableUriPermission(u,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}selectedImage=u.toString();Toast.makeText(this,"Bilden är vald",Toast.LENGTH_SHORT).show();}
+        else if(req==EXPORT_BACKUP)writeBackup(u);
+        else if(req==IMPORT_BACKUP)readBackup(u);
+        else if(req==IMPORT_RECIPE){try{getContentResolver().takePersistableUriPermission(u,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}importRecipeFromUri(u);}
+    }
+
+    void backup(){
+        cancelTimer();base();Button back=btn("‹ Tillbaka");back.setOnClickListener(v->home());root.addView(back,new LinearLayout.LayoutParams(-2,-2));title("Säkerhetskopia");
+        root.addView(txt("Spara alla recept, favoriter, inköpslistan och veckomenyn i en fil.",16,MUTED));
+        Button export=btn("Exportera säkerhetskopia"),restore=btn("Återställ från fil");full(export,18);full(restore,5);
+        export.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.setType("application/json");i.putExtra(Intent.EXTRA_TITLE,"Receptboken-backup.json");startActivityForResult(i,EXPORT_BACKUP);});
+        restore.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.setType("application/json");i.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,IMPORT_BACKUP);});
+    }
+    JSONObject backupJson(){JSONObject o=new JSONObject();JSONArray a=new JSONArray();for(Recipe r:recipes)a.put(r.json());try{o.put("version",3);o.put("recipes",a);o.put("shopping",new JSONArray(shopping));JSONObject w=new JSONObject();for(String d:DAYS){String n=weekMenu.get(d);if(n!=null)w.put(d,n);}o.put("week",w);}catch(Exception ignored){}return o;}
     void writeBackup(Uri u){try{OutputStream out=getContentResolver().openOutputStream(u);out.write(backupJson().toString(2).getBytes("UTF-8"));out.close();Toast.makeText(this,"Säkerhetskopian är sparad",Toast.LENGTH_LONG).show();}catch(Exception e){Toast.makeText(this,"Kunde inte spara filen",Toast.LENGTH_LONG).show();}}
-    void readBackup(Uri u){try{InputStream in=getContentResolver().openInputStream(u);ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;while((n=in.read(buf))>0)out.write(buf,0,n);in.close();JSONObject o=new JSONObject(out.toString("UTF-8"));JSONArray a=o.getJSONArray("recipes");ArrayList<Recipe> restored=new ArrayList<>();for(int i=0;i<a.length();i++)restored.add(Recipe.from(a.getJSONObject(i)));recipes.clear();recipes.addAll(restored);shopping.clear();JSONArray s=o.optJSONArray("shopping");if(s!=null)for(int i=0;i<s.length();i++)shopping.add(s.getString(i));save();saveShopping();Toast.makeText(this,"Säkerhetskopian är återställd",Toast.LENGTH_LONG).show();home();}catch(Exception e){Toast.makeText(this,"Filen kunde inte läsas",Toast.LENGTH_LONG).show();}}
+    void readBackup(Uri u){
+        try{
+            InputStream in=getContentResolver().openInputStream(u);ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;while((n=in.read(buf))>0)out.write(buf,0,n);in.close();
+            JSONObject o=new JSONObject(out.toString("UTF-8"));JSONArray a=o.getJSONArray("recipes");ArrayList<Recipe> restored=new ArrayList<>();for(int i=0;i<a.length();i++)restored.add(Recipe.from(a.getJSONObject(i)));
+            recipes.clear();recipes.addAll(restored);shopping.clear();JSONArray s=o.optJSONArray("shopping");if(s!=null)for(int i=0;i<s.length();i++)shopping.add(s.getString(i));
+            weekMenu.clear();JSONObject w=o.optJSONObject("week");if(w!=null)for(String d:DAYS){String x=w.optString(d,"");if(!x.isEmpty())weekMenu.put(d,x);}
+            save();saveShopping();saveWeek();Toast.makeText(this,"Säkerhetskopian är återställd",Toast.LENGTH_LONG).show();home();
+        }catch(Exception e){Toast.makeText(this,"Filen kunde inte läsas",Toast.LENGTH_LONG).show();}
+    }
 
-    void shopping(){cancelTimer();base();Button back=btn("‹ Tillbaka");back.setOnClickListener(v->home());root.addView(back,new LinearLayout.LayoutParams(-2,-2));title("Inköpslista");if(shopping.isEmpty())root.addView(txt("Listan är tom. Lägg till ingredienser från ett recept.",16,MUTED));for(String item:new ArrayList<>(shopping)){CheckBox cb=new CheckBox(this);cb.setText(item);cb.setTextSize(17);cb.setPadding(dp(8),dp(8),dp(8),dp(8));root.addView(cb);cb.setOnCheckedChangeListener((v,c)->{if(c){shopping.remove(item);saveShopping();root.postDelayed(()->shopping(),250);}});}if(!shopping.isEmpty()){Button clear=btn("Töm inköpslistan");clear.setBackground(round(RED));full(clear,16);clear.setOnClickListener(v->{shopping.clear();saveShopping();shopping();});}}
-    void loadShopping(){try{JSONArray a=new JSONArray(prefs.getString("shopping","[]"));for(int i=0;i<a.length();i++)shopping.add(a.getString(i));}catch(Exception ignored){}}
+    void loadShopping(){shopping.clear();try{JSONArray a=new JSONArray(prefs.getString("shopping","[]"));for(int i=0;i<a.length();i++)shopping.add(a.getString(i));}catch(Exception ignored){}}
     void saveShopping(){prefs.edit().putString("shopping",new JSONArray(shopping).toString()).apply();}
     void load(){String d=prefs.getString("data","");if(d.isEmpty()){seed();save();return;}try{JSONArray a=new JSONArray(d);for(int i=0;i<a.length();i++)recipes.add(Recipe.from(a.getJSONObject(i)));migrateKnownRecipes();save();}catch(Exception e){seed();save();}}
     void save(){JSONArray a=new JSONArray();for(Recipe r:recipes)a.put(r.json());prefs.edit().putString("data",a.toString()).apply();}
@@ -223,6 +514,22 @@ public class MainActivity extends Activity {
         recipes.add(new Recipe("Kladdmuffins","Bakning",25,16,"st","100 g smör\n2 ägg\n2,5 dl strösocker\n2 tsk vaniljsocker\n0,5 tsk bakpulver\n2 krm salt\n4 msk kakao\n2 dl (120 g) vetemjöl","1. Sätt ugnen på 200 °C. Smält smöret och låt det svalna.\n2. Ställ ut 16 bakformar på en plåt.\n3. Vispa ägg och strösocker ljust och pösigt.\n4. Tillsätt vaniljsocker, bakpulver, salt och kakao och vispa till en jämn smet.\n5. Tillsätt vetemjöl och det smälta smöret. Vispa snabbt ihop smeten.\n6. Fördela smeten jämnt i formarna.\n7. Grädda mitt i ugnen i 8–10 minuter. Ta ut dem när de börjar sjunka för att behålla kladdigheten.\n8. Låt muffinsen svalna på plåten under en handduk.","Sikta gärna florsocker över vid servering. Förvara svalt eller frys in när de har svalnat helt. I frysen håller de ungefär 3–6 månader."));
     }
 
+    static class ShopItem{
+        double qty=0;String unit="",name="",key="";boolean numeric=false;
+        static ShopItem parse(String raw){
+            ShopItem x=new ShopItem();String s=raw==null?"":raw.trim();
+            Matcher m=Pattern.compile("^([0-9]+(?:[.,][0-9]+)?) +(?:(g|kg|dl|ml|l|msk|tsk|krm|st) +)?(.+)$",Pattern.CASE_INSENSITIVE).matcher(s);
+            if(m.matches()){
+                x.numeric=true;try{x.qty=Double.parseDouble(m.group(1).replace(',','.'));}catch(Exception e){x.qty=0;}
+                x.unit=m.group(2)==null?"":m.group(2).toLowerCase(Locale.ROOT);x.name=m.group(3).trim();
+                x.key="n|"+x.unit+"|"+normalize(x.name);
+            }else{x.name=s;x.key="t|"+normalize(s);}
+            return x;
+        }
+        static String normalize(String s){return s.toLowerCase(Locale.ROOT).replaceAll("[ ]+"," ").trim();}
+        String display(){if(!numeric)return name;String q;if(Math.abs(qty-Math.rint(qty))<.001)q=""+(int)Math.rint(qty);else{q=String.format(Locale.US,"%.2f",qty);while(q.endsWith("0"))q=q.substring(0,q.length()-1);if(q.endsWith("."))q=q.substring(0,q.length()-1);q=q.replace('.',',');}return q+" "+(unit.isEmpty()?"":unit+" ")+name;}
+    }
+
     static class Recipe{
         String name="",category="Övrigt",ingredients="",steps="",image="",unit="portioner",tips="";int time=0,amount=1;boolean fav=false;
         Recipe(){}
@@ -232,5 +539,6 @@ public class MainActivity extends Activity {
         static String guessUnit(String name){String n=name==null?"":name.toLowerCase(Locale.ROOT);if(n.contains("muffin"))return "st";if(n.contains("kladdkaka"))return "bitar";return "portioner";}
     }
 
+    @Override protected void onDestroy(){finishPdfImport(true);super.onDestroy();}
     @Override public void onBackPressed(){home();}
 }
