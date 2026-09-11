@@ -6,8 +6,9 @@
             android:exported="false" />
 
         <activity
-            android:name=".RecoveryActivity"
+            android:name=".MatFikaActivity"
             android:screenOrientation="unspecified"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
             android:exported="true">
             <intent-filter>
