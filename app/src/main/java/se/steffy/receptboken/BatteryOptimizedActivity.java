@@ -3,19 +3,13 @@ package se.steffy.receptboken;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
-import android.os.Build;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowInsets;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -40,82 +34,24 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
         }
     };
 
-    private ScrollView keyboardScroll;
-
-    @Override
-    void base() {
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-
-        keyboardScroll = new ScrollView(this);
-        keyboardScroll.setFillViewport(true);
-        keyboardScroll.setClipToPadding(false);
-        keyboardScroll.setVerticalScrollBarEnabled(true);
-
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), top(), dp(18), dp(28));
-        root.setBackgroundColor(BG);
-        keyboardScroll.addView(root);
-        setContentView(keyboardScroll);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            keyboardScroll.setOnApplyWindowInsetsListener((v, insets) -> {
-                int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
-                int bars = insets.getInsets(WindowInsets.Type.systemBars()).bottom;
-                keyboardScroll.setPadding(0, 0, 0, Math.max(0, ime - bars));
-                return insets;
-            });
-            keyboardScroll.requestApplyInsets();
-        }
-    }
-
+    /**
+     * Keep the original, known-stable editor implementation and only limit
+     * multiline fields to five visible lines. Android's EditText then handles
+     * cursor-following/internal scrolling natively as more text is entered.
+     */
     @Override
     EditText field(String hint, String val, boolean multi) {
         EditText editor = super.field(hint, val, multi);
-        editor.setHorizontallyScrolling(false);
-
         if (multi) {
-            // Viktigt: låt inte långa receptfält växa ned bakom tangentbordet.
-            // Fältet har en fast, bekväm höjd och texten rullas INUTI fältet.
             editor.setMinLines(5);
             editor.setMaxLines(5);
             editor.setGravity(Gravity.TOP | Gravity.START);
+            editor.setHorizontallyScrolling(false);
             editor.setVerticalScrollBarEnabled(true);
             editor.setScrollbarFadingEnabled(false);
             editor.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
-            editor.setPadding(dp(12), dp(12), dp(12), dp(12));
-        } else {
-            editor.setSingleLine(true);
+            editor.setNestedScrollingEnabled(true);
         }
-
-        // När man skriver längst ned i ett långt flerradigt fält sköter EditText
-        // sin egen interna scroll och markören hålls synlig ovanför tangentbordet.
-        editor.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-            @Override public void afterTextChanged(Editable s) {
-                if (multi && editor.hasFocus()) {
-                    editor.post(() -> {
-                        try {
-                            int pos = Math.max(0, editor.getSelectionStart());
-                            if (editor.getLayout() != null) {
-                                int line = editor.getLayout().getLineForOffset(pos);
-                                int y = editor.getLayout().getLineTop(line);
-                                int maxY = Math.max(0, editor.getLayout().getHeight() - editor.getHeight() + editor.getCompoundPaddingTop() + editor.getCompoundPaddingBottom());
-                                editor.scrollTo(0, Math.min(Math.max(0, y - dp(24)), maxY));
-                            }
-                        } catch (Exception ignored) {}
-                    });
-                }
-            }
-        });
-
-        editor.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus && keyboardScroll != null) {
-                editor.postDelayed(() -> keyboardScroll.requestChildFocus(editor, editor), 180);
-            }
-        });
         return editor;
     }
 
@@ -123,6 +59,8 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
     void detail(Recipe r, int amount) {
         cancelTimer();
         base();
+        // Ordinary recipe reading follows the phone's normal screen timeout.
+        // Only the dedicated cooking mode keeps the display awake.
         Button back = btn("‹ Tillbaka");
         back.setOnClickListener(v -> home());
         root.addView(back, new LinearLayout.LayoutParams(-2, -2));
