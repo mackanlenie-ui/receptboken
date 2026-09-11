@@ -74,6 +74,10 @@ public class DiaryDb extends SQLiteOpenHelper {
         return query("date LIKE ?", new String[]{yyyyMm + "%"}, "date ASC", null);
     }
 
+    public ArrayList<Entry> sameDay(String mmDd, String excludeDate) {
+        return query("substr(date,6,5)=? AND date<>?", new String[]{mmDd, excludeDate}, "date DESC", "3");
+    }
+
     public int countAll() {
         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM entries", null)) {
             return c.moveToFirst() ? c.getInt(0) : 0;
