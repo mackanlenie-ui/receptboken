@@ -4,12 +4,11 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
-import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -25,38 +24,32 @@ public class TextEditorActivity extends Activity {
     }
 
     @Override
-    protected void onCreate(Bundle state) {
+    public void onCreate(Bundle state) {
         super.onCreate(state);
+
+        // Keep this activity deliberately simple. Android handles the keyboard
+        // resizing itself; no custom insets or keyboard animation code is used.
         getWindow().setSoftInputMode(
                 WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE |
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
 
+        try {
+            buildEditor();
+        } catch (Throwable error) {
+            buildFallbackEditor();
+        }
+    }
+
+    private void buildEditor() {
         String title = getIntent().getStringExtra(EXTRA_TITLE);
         if (title == null || title.trim().isEmpty()) title = "Redigera text";
         String initial = getIntent().getStringExtra(EXTRA_TEXT);
         if (initial == null) initial = "";
 
-        final int side = dp(18);
-        final int topBase = dp(18);
-        final int bottomBase = dp(18);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(side, topBase, side, bottomBase);
+        root.setPadding(dp(18), dp(18), dp(18), dp(18));
         root.setBackgroundColor(Color.rgb(255, 248, 240));
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            root.setOnApplyWindowInsetsListener((v, insets) -> {
-                int statusTop = insets.getInsets(WindowInsets.Type.statusBars()).top;
-                int navBottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
-                int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
-                v.setPadding(side,
-                        topBase + statusTop,
-                        side,
-                        bottomBase + Math.max(navBottom, imeBottom));
-                return insets;
-            });
-        }
 
         TextView heading = new TextView(this);
         heading.setText(title);
@@ -66,7 +59,7 @@ public class TextEditorActivity extends Activity {
         root.addView(heading, new LinearLayout.LayoutParams(-1, -2));
 
         TextView help = new TextView(this);
-        help.setText("Här kan du skriva och rulla hela texten. Knapparna ligger ovanför tangentbordet.");
+        help.setText("Tryck i texten och skriv. Texten rullar automatiskt så raden du skriver på förblir synlig.");
         help.setTextSize(14);
         help.setTextColor(Color.rgb(110, 103, 97));
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
@@ -75,23 +68,28 @@ public class TextEditorActivity extends Activity {
 
         LinearLayout buttons = new LinearLayout(this);
         buttons.setOrientation(LinearLayout.HORIZONTAL);
+
         Button cancel = new Button(this);
         cancel.setText("Avbryt");
         Button done = new Button(this);
         done.setText("✓ Klar");
-        LinearLayout.LayoutParams bp1 = new LinearLayout.LayoutParams(0, -2, 1f);
-        bp1.setMargins(0, 0, dp(6), 0);
-        LinearLayout.LayoutParams bp2 = new LinearLayout.LayoutParams(0, -2, 1f);
-        bp2.setMargins(dp(6), 0, 0, 0);
-        buttons.addView(cancel, bp1);
-        buttons.addView(done, bp2);
-        LinearLayout.LayoutParams buttonsParams = new LinearLayout.LayoutParams(-1, -2);
-        buttonsParams.setMargins(0, 0, 0, dp(8));
-        root.addView(buttons, buttonsParams);
+
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -2, 1f);
+        left.setMargins(0, 0, dp(6), 0);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1f);
+        right.setMargins(dp(6), 0, 0, 0);
+        buttons.addView(cancel, left);
+        buttons.addView(done, right);
+
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, -2);
+        bp.setMargins(0, 0, 0, dp(8));
+        root.addView(buttons, bp);
 
         EditText editor = new EditText(this);
         editor.setText(initial);
         editor.setTextSize(18);
+        editor.setTextColor(Color.rgb(45, 39, 35));
+        editor.setHintTextColor(Color.rgb(130, 120, 112));
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setSingleLine(false);
         editor.setHorizontallyScrolling(false);
@@ -100,7 +98,9 @@ public class TextEditorActivity extends Activity {
         editor.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         editor.setPadding(dp(12), dp(12), dp(12), dp(12));
+
         LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(-1, 0, 1f);
         root.addView(editor, ep);
 
@@ -110,6 +110,7 @@ public class TextEditorActivity extends Activity {
             setResult(RESULT_CANCELED);
             finish();
         });
+
         done.setOnClickListener(v -> {
             Intent result = new Intent();
             result.putExtra(EXTRA_TEXT, editor.getText().toString());
@@ -117,11 +118,37 @@ public class TextEditorActivity extends Activity {
             finish();
         });
 
-        editor.requestFocus();
-        editor.postDelayed(() -> {
-            editor.setSelection(editor.getText().length());
-            editor.requestRectangleOnScreen(new android.graphics.Rect(0,
-                    Math.max(0, editor.getHeight() - dp(40)), editor.getWidth(), editor.getHeight()));
-        }, 180);
+        // Do not force the keyboard open. The user taps the text area when ready.
+        // This avoids Samsung/One UI keyboard + window-inset crashes.
+        editor.setSelection(editor.getText().length());
+    }
+
+    private void buildFallbackEditor() {
+        String initial = getIntent().getStringExtra(EXTRA_TEXT);
+        if (initial == null) initial = "";
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(16), dp(16), dp(16), dp(16));
+        root.setBackgroundColor(Color.WHITE);
+
+        EditText editor = new EditText(this);
+        editor.setText(initial);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setSingleLine(false);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        root.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        Button done = new Button(this);
+        done.setText("Klar");
+        root.addView(done, new LinearLayout.LayoutParams(-1, -2));
+        setContentView(root);
+
+        done.setOnClickListener(v -> {
+            Intent result = new Intent();
+            result.putExtra(EXTRA_TEXT, editor.getText().toString());
+            setResult(RESULT_OK, result);
+            finish();
+        });
     }
 }
