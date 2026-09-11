@@ -6,6 +6,7 @@ import android.net.Uri;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -22,6 +23,8 @@ import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 public final class BackupManager {
+    private static final int MAX_NESTED_ZIP_DEPTH = 2;
+
     private BackupManager() {}
 
     public static void exportBackup(Context context, DiaryDb db, Uri target) throws Exception {
@@ -53,12 +56,14 @@ public final class BackupManager {
 
         JSONObject root = new JSONObject();
         root.put("format", "MinDagbokBackup");
-        root.put("version", 1);
+        root.put("version", 2);
         root.put("created", System.currentTimeMillis());
         root.put("entries", entries);
 
-        try (OutputStream raw = context.getContentResolver().openOutputStream(target);
-             ZipOutputStream zip = new ZipOutputStream(raw)) {
+        OutputStream raw = context.getContentResolver().openOutputStream(target, "w");
+        if (raw == null) throw new IllegalStateException("Kunde inte öppna backupfilen för skrivning");
+
+        try (OutputStream out = raw; ZipOutputStream zip = new ZipOutputStream(out)) {
             zip.putNextEntry(new ZipEntry("entries.json"));
             zip.write(root.toString(2).getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
@@ -72,70 +77,146 @@ public final class BackupManager {
                 }
                 zip.closeEntry();
             }
+            zip.finish();
         }
     }
 
     public static int importBackup(Context context, DiaryDb db, Uri source) throws Exception {
-        String json = null;
-        HashMap<String, byte[]> images = new HashMap<>();
-        try (InputStream raw = context.getContentResolver().openInputStream(source);
-             ZipInputStream zip = new ZipInputStream(raw)) {
+        InputStream raw = context.getContentResolver().openInputStream(source);
+        if (raw == null) throw new IllegalArgumentException("Kunde inte öppna den valda backupfilen");
+
+        byte[] sourceBytes;
+        try (InputStream in = raw) {
+            sourceBytes = readAll(in);
+        }
+        if (sourceBytes.length == 0) throw new IllegalArgumentException("Backupfilen är tom");
+
+        ParsedBackup parsed = parseBackupBytes(sourceBytes, 0);
+        JSONObject root = new JSONObject(parsed.json);
+        String format = root.optString("format", "");
+        if (!"MinDagbokBackup".equals(format)) {
+            throw new IllegalArgumentException("Filen är inte en säkerhetskopia från Min Dagbok");
+        }
+
+        JSONArray arr = root.optJSONArray("entries");
+        if (arr == null) throw new IllegalArgumentException("Backupen saknar anteckningar");
+        if (arr.length() == 0) throw new IllegalArgumentException("Backupen innehåller inga sparade anteckningar");
+
+        File imageDir = new File(context.getFilesDir(), "diary_images");
+        if (!imageDir.exists() && !imageDir.mkdirs()) {
+            throw new IllegalStateException("Bildmappen kunde inte skapas");
+        }
+
+        ArrayList<Entry> restored = new ArrayList<>();
+        ArrayList<File> newlyWrittenImages = new ArrayList<>();
+        try {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject item = arr.optJSONObject(i);
+                if (item == null) continue;
+
+                Entry e = new Entry();
+                e.date = item.optString("date", "").trim();
+                if (e.date.isEmpty()) continue;
+                e.title = item.optString("title", "");
+                e.body = item.optString("body", "");
+                e.mood = item.optInt("mood", 2);
+                e.favorite = item.optBoolean("favorite", false);
+                e.updated = item.optLong("updated", System.currentTimeMillis());
+
+                JSONArray photos = item.optJSONArray("photos");
+                if (photos != null) {
+                    for (int j = 0; j < photos.length(); j++) {
+                        String archiveName = photos.optString(j, "");
+                        byte[] bytes = parsed.images.get(archiveName);
+                        if (bytes == null || bytes.length == 0) continue;
+
+                        String ext = extension(archiveName);
+                        File out = new File(imageDir, "restored_" + UUID.randomUUID() + ext);
+                        try (FileOutputStream fos = new FileOutputStream(out)) {
+                            fos.write(bytes);
+                        }
+                        newlyWrittenImages.add(out);
+                        e.photos.add(out.getAbsolutePath());
+                    }
+                }
+                restored.add(e);
+            }
+
+            if (restored.isEmpty()) {
+                throw new IllegalArgumentException("Inga giltiga dagboksanteckningar hittades i backupen");
+            }
+
+            // Radera inte den nuvarande databasen förrän hela backupen har lästs korrekt.
+            db.clearAll();
+            for (Entry e : restored) {
+                if (db.save(e) < 0) throw new IllegalStateException("En anteckning kunde inte återställas");
+            }
+            return restored.size();
+        } catch (Exception e) {
+            // Städa endast bilder som skapades under ett misslyckat importförsök.
+            for (File f : newlyWrittenImages) {
+                try { if (f.exists()) f.delete(); } catch (Exception ignored) {}
+            }
+            throw e;
+        }
+    }
+
+    private static ParsedBackup parseBackupBytes(byte[] bytes, int depth) throws Exception {
+        if (depth > MAX_NESTED_ZIP_DEPTH) {
+            throw new IllegalArgumentException("Backupfilen innehåller för många kapslade zip-filer");
+        }
+
+        String trimmed = new String(bytes, 0, Math.min(bytes.length, 64), StandardCharsets.UTF_8).trim();
+        if (trimmed.startsWith("{")) {
+            return new ParsedBackup(new String(bytes, StandardCharsets.UTF_8), new HashMap<>());
+        }
+
+        HashMap<String, byte[]> entries = new HashMap<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    zip.closeEntry();
+                    continue;
+                }
+                String name = entry.getName();
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buffer = new byte[16 * 1024];
                 int n;
                 while ((n = zip.read(buffer)) > 0) out.write(buffer, 0, n);
-                if ("entries.json".equals(entry.getName())) {
-                    json = out.toString(StandardCharsets.UTF_8.name());
-                } else if (entry.getName().startsWith("images/")) {
-                    images.put(entry.getName(), out.toByteArray());
-                }
+                entries.put(name, out.toByteArray());
                 zip.closeEntry();
             }
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Backupfilen är skadad eller har fel format");
         }
 
-        if (json == null) throw new IllegalArgumentException("entries.json saknas");
-        JSONObject root = new JSONObject(json);
-        if (!"MinDagbokBackup".equals(root.optString("format"))) {
-            throw new IllegalArgumentException("Fel säkerhetskopieformat");
-        }
-        JSONArray arr = root.optJSONArray("entries");
-        if (arr == null) throw new IllegalArgumentException("Inga anteckningar hittades");
-
-        File imageDir = new File(context.getFilesDir(), "diary_images");
-        if (!imageDir.exists() && !imageDir.mkdirs()) throw new IllegalStateException("Bildmappen kunde inte skapas");
-
-        ArrayList<Entry> restored = new ArrayList<>();
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject item = arr.optJSONObject(i);
-            if (item == null) continue;
-            Entry e = new Entry();
-            e.date = item.optString("date", "");
-            if (e.date.isEmpty()) continue;
-            e.title = item.optString("title", "");
-            e.body = item.optString("body", "");
-            e.mood = item.optInt("mood", 2);
-            e.favorite = item.optBoolean("favorite", false);
-            e.updated = item.optLong("updated", System.currentTimeMillis());
-            JSONArray p = item.optJSONArray("photos");
-            if (p != null) {
-                for (int j = 0; j < p.length(); j++) {
-                    String archiveName = p.optString(j, "");
-                    byte[] bytes = images.get(archiveName);
-                    if (bytes == null) continue;
-                    String ext = extension(archiveName);
-                    File out = new File(imageDir, "restored_" + UUID.randomUUID() + ext);
-                    try (FileOutputStream fos = new FileOutputStream(out)) { fos.write(bytes); }
-                    e.photos.add(out.getAbsolutePath());
-                }
+        byte[] jsonBytes = entries.get("entries.json");
+        if (jsonBytes != null) {
+            HashMap<String, byte[]> images = new HashMap<>();
+            for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+                if (entry.getKey().startsWith("images/")) images.put(entry.getKey(), entry.getValue());
             }
-            restored.add(e);
+            return new ParsedBackup(new String(jsonBytes, StandardCharsets.UTF_8), images);
         }
 
-        db.clearAll();
-        for (Entry e : restored) db.save(e);
-        return restored.size();
+        // Vissa filhanterare kan lägga en zip inuti en annan zip. Acceptera det också.
+        for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
+            String lower = entry.getKey().toLowerCase();
+            if (lower.endsWith(".zip") || lower.endsWith(".dagbokzip")) {
+                return parseBackupBytes(entry.getValue(), depth + 1);
+            }
+        }
+
+        throw new IllegalArgumentException("entries.json saknas i backupfilen");
+    }
+
+    private static byte[] readAll(InputStream in) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[16 * 1024];
+        int n;
+        while ((n = in.read(buffer)) > 0) out.write(buffer, 0, n);
+        return out.toByteArray();
     }
 
     private static File fileFromValue(String value) {
@@ -150,5 +231,15 @@ public final class BackupManager {
         int dot = name.lastIndexOf('.');
         if (dot >= 0 && name.length() - dot <= 6) return name.substring(dot);
         return ".jpg";
+    }
+
+    private static final class ParsedBackup {
+        final String json;
+        final HashMap<String, byte[]> images;
+
+        ParsedBackup(String json, HashMap<String, byte[]> images) {
+            this.json = json;
+            this.images = images;
+        }
     }
 }
