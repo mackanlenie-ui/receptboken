@@ -22,10 +22,25 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
     LinearLayout shell;
     TextView resultCount;
     int columns=1;
+    Recipe editingRecipe; boolean editingImported; Recipe visibleRecipe; int visibleAmount;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        if(state!=null){
+            group=state.getString("group","Alla");query=state.getString("query","");favoritesOnly=state.getBoolean("favorites",false);
+            if(state.getBoolean("editor",false)){
+                Recipe old=findRecipe(state.getString("editingName",""));boolean imported=state.getBoolean("imported",false);
+                edit(old,imported);ArrayList<String> values=state.getStringArrayList("fields");int n=0;
+                if(values!=null)for(int k=0;k<root.getChildCount();k++)if(root.getChildAt(k) instanceof EditText&&n<values.size())((EditText)root.getChildAt(k)).setText(values.get(n++));
+                selectedImage=state.getString("image","");
+            }else{Recipe r=findRecipe(state.getString("detail",""));if(r!=null)detail(r,state.getInt("amount",r.amount));else home();}
+        }
+    }
+    @Override protected void onSaveInstanceState(Bundle state){
+        super.onSaveInstanceState(state);state.putString("group",group);state.putString("query",query);state.putBoolean("favorites",favoritesOnly);state.putBoolean("editor",editing);
+        if(editing){state.putString("editingName",editingRecipe==null?"":editingRecipe.name);state.putBoolean("imported",editingImported);state.putString("image",selectedImage);ArrayList<String> values=new ArrayList<>();for(int k=0;k<root.getChildCount();k++)if(root.getChildAt(k) instanceof EditText)values.add(((EditText)root.getChildAt(k)).getText().toString());state.putStringArrayList("fields",values);}
+        else if(visibleRecipe!=null){state.putString("detail",visibleRecipe.name);state.putInt("amount",visibleAmount);}
     }
 
     @Override void load() {
@@ -53,7 +68,7 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
     @Override LinearLayout card(){LinearLayout c=super.card();c.setElevation(0);c.setPadding(dp(18),dp(18),dp(18),dp(18));c.setBackground(round(Color.WHITE));return c;}
 
     @Override void base(){
-        atHome=false;editing=false;
+        atHome=false;editing=false;visibleRecipe=null;
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         shell=new LinearLayout(this);shell.setOrientation(LinearLayout.VERTICAL);shell.setBackgroundColor(CREAM);
         page=new ScrollView(this);page.setFillViewport(true);page.setVerticalScrollBarEnabled(false);page.setOverScrollMode(View.OVER_SCROLL_NEVER);
@@ -84,13 +99,14 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         // Grow in the page instead of nesting two independently scrolling editors.
         root.addView(e,new LinearLayout.LayoutParams(-1,-2));return e;
     }
-    @Override void edit(Recipe old,boolean imported){super.edit(old,imported);editing=true;}
+    @Override void edit(Recipe old,boolean imported){super.edit(old,imported);editing=true;editingRecipe=old;editingImported=imported;}
     @Override void edit(Recipe old){edit(old,false);}
 
     @Override void home(){
         cancelTimer();base();atHome=true;
         LinearLayout brand=new LinearLayout(this);brand.setGravity(Gravity.CENTER_VERTICAL);
         TextView logo=txt("◒  MAT & FIKA",15,GREEN);logo.setLetterSpacing(.12f);logo.setTypeface(null,Typeface.BOLD);brand.addView(logo,new LinearLayout.LayoutParams(0,-2,1));
+        Button add=quiet("＋");add.setContentDescription("Nytt recept");LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(dp(48),dp(48));ap.setMargins(0,0,dp(6),0);brand.addView(add,ap);add.setOnClickListener(v->edit(null));
         Button more=quiet("•••");more.setContentDescription("Fler funktioner");brand.addView(more,new LinearLayout.LayoutParams(dp(54),dp(48)));root.addView(brand);
         more.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Din receptbok").setItems(new String[]{"Nytt recept","Importera foto eller PDF","Säkerhetskopiera & återställ"},(d,w)->{if(w==0)edit(null);else if(w==1)chooseRecipeImport();else backup();}).setNegativeButton("Stäng",null).show());
         title("Gott att laga.\nHärligt att baka.");
@@ -110,7 +126,7 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         addNav(nav,"Recept",!favoritesOnly,()->{favoritesOnly=false;home();});addNav(nav,"Favoriter",favoritesOnly,()->{favoritesOnly=true;home();});addNav(nav,"Inköp",false,()->shopping());addNav(nav,"Veckomeny",false,()->weeklyMenu());shell.addView(nav,new LinearLayout.LayoutParams(-1,-2));
     }
     void addNav(LinearLayout nav,String label,boolean active,Runnable action){Button b=active?btn(label):quiet(label);b.setTextSize(11);b.setPadding(dp(3),dp(6),dp(3),dp(6));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(50),1);p.setMargins(dp(3),0,dp(3),0);nav.addView(b,p);b.setOnClickListener(v->action.run());}
-    static boolean isBaking(Recipe r){String c=(r.category+" "+r.name).toLowerCase(Locale.ROOT);return c.matches(".*(bakning|kakor|kaka|muffin|bulle|bullar|chokladboll|smulpaj|sockerkaka|efterrätt).* ".trim());}
+    static boolean isBaking(Recipe r){String c=(r.category+" "+r.name).toLowerCase(Locale.ROOT);return c.matches(".*(bakning|kakor|kaka|muffin|bulle|bullar|chokladboll|smulpaj|sockerkaka|efterrätt).*");}
     @Override void render(String q){
         if(list==null)return;list.removeAllViews();ArrayList<Recipe> ordered=new ArrayList<>(recipes);
         if(sortMode.equals("A–Ö"))Collections.sort(ordered,(a,b)->java.text.Collator.getInstance(new Locale("sv","SE")).compare(a.name,b.name));
@@ -130,12 +146,12 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         if(shown==0){LinearLayout empty=card();empty.addView(txt(favoritesOnly?"Här samlas dina favoriter":"Inga recept hittades",23,INK));empty.addView(txt(favoritesOnly?"Tryck på hjärtat på ett recept för att spara det här.":"Prova ett annat sökord eller välj Alla.",16,GREY));list.addView(empty);}
     }
     @Override void detail(Recipe r,int amount){
-        super.detail(r,amount);
+        super.detail(r,amount);visibleRecipe=r;visibleAmount=amount;
         if(r.image.isEmpty()){FoodArt art=new FoodArt(isBaking(r),false);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(180));p.setMargins(0,dp(14),0,0);root.addView(art,1,p);}
         // Ingredients and instructions share a row when the window is wide.
         if(getResources().getConfiguration().screenWidthDp>=800){
             int begin=-1;for(int i=0;i<root.getChildCount();i++){View v=root.getChildAt(i);if(v instanceof TextView && ((TextView)v).getText().toString().equals("Ingredienser")){begin=i;break;}}
-            if(begin>=0&&root.getChildCount()>=begin+4){LinearLayout sides=new LinearLayout(this),left=new LinearLayout(this),right=new LinearLayout(this);left.setOrientation(1);right.setOrientation(1);for(int i=0;i<2;i++){View v=root.getChildAt(begin);root.removeViewAt(begin);left.addView(v);}while(root.getChildCount()>begin){View v=root.getChildAt(begin);root.removeViewAt(begin);right.addView(v);}sides.addView(left,half(0,12));sides.addView(right,half(12,0));root.addView(sides);}
+            if(begin>=0&&root.getChildCount()>=begin+4){LinearLayout sides=new LinearLayout(this),left=new LinearLayout(this),right=new LinearLayout(this);left.setOrientation(LinearLayout.VERTICAL);right.setOrientation(LinearLayout.VERTICAL);for(int i=0;i<2;i++){View v=root.getChildAt(begin);root.removeViewAt(begin);left.addView(v);}while(root.getChildCount()>begin){View v=root.getChildAt(begin);root.removeViewAt(begin);right.addView(v);}sides.addView(left,half(0,12));sides.addView(right,half(12,0));root.addView(sides);}
         }
     }
     @Override void readBackup(android.net.Uri uri){new AlertDialog.Builder(this).setTitle("Återställ säkerhetskopia?").setMessage("Recept, favoriter, inköpslista och veckomeny ersätts av innehållet i filen.").setNegativeButton("Avbryt",null).setPositiveButton("Återställ",(d,w)->super.readBackup(uri)).show();}
