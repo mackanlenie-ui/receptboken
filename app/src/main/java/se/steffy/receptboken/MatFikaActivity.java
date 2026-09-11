@@ -72,7 +72,10 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         shell=new LinearLayout(this);shell.setOrientation(LinearLayout.VERTICAL);shell.setBackgroundColor(CREAM);
         page=new ScrollView(this);page.setFillViewport(true);page.setVerticalScrollBarEnabled(false);page.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(22),dp(16),dp(22),dp(30));
+        int windowDp=getResources().getConfiguration().screenWidthDp;
+        int side=Math.max(dp(22),dp((windowDp-1120)/2));
+        columns=windowDp>=1000?3:windowDp>=650?2:1;
+        root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(side,dp(16),side,dp(30));
         root.setFocusableInTouchMode(true);page.addView(root,new ScrollView.LayoutParams(-1,-2));shell.addView(page,new LinearLayout.LayoutParams(-1,0,1));
         setContentView(shell);
         shell.setOnApplyWindowInsetsListener((v,insets)->{
@@ -81,12 +84,7 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
             return insets;
         });
         shell.requestApplyInsets();
-        root.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->{
-            int width=r-l;int side=Math.max(dp(22),(width-dp(1120))/2);
-            if(root.getPaddingLeft()!=side)root.setPadding(side,dp(16),side,dp(30));
-            int next=width>=dp(1000)?3:width>=dp(650)?2:1;
-            if(atHome && next!=columns){columns=next;render(query);}
-        });
+
     }
     @Override EditText field(String hint,String value,boolean multi){
         TextView label=txt(hint,14,GREY);label.setPadding(dp(3),dp(16),0,dp(7));root.addView(label);
@@ -164,8 +162,7 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         final boolean cake,hero; final Paint p=new Paint(3);
         FoodArt(boolean cake,boolean hero){super(MatFikaActivity.this);this.cake=cake;this.hero=hero;setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);}
         void oval(Canvas c,float x,float y,float w,float h,int color){p.setColor(color);c.drawOval(x,y,x+w,y+h,p);}
-        @Override protected void onDraw(Canvas canvas){super.onDraw(canvas);Canvas c=canvas;c.save();c.scale(getWidth()/320f,getHeight()/190f);
-            if(!hero)c.drawColor(cake?0xFFF1E3CF:PALE);
+        @Override protected void onDraw(Canvas canvas){super.onDraw(canvas);Canvas c=canvas;if(!hero)c.drawColor(cake?0xFFF1E3CF:PALE);c.save();float scale=Math.min(getWidth()/320f,getHeight()/190f);c.translate((getWidth()-320*scale)/2,(getHeight()-190*scale)/2);c.scale(scale,scale);
             oval(c,62,137,203,24,hero?0xFF173B2B:0x190F3523);oval(c,48,24,224,145,0xFFFDFBF4);oval(c,61,33,198,124,0xFFE4E8DA);oval(c,69,39,182,110,0xFFF8F6ED);
             if(cake){Path path=new Path();path.moveTo(113,65);path.lineTo(206,61);path.lineTo(230,125);path.lineTo(114,132);path.close();p.setColor(0xFF683D2B);c.drawPath(path,p);Path top=new Path();top.moveTo(112,64);top.lineTo(207,48);top.lineTo(228,109);top.lineTo(114,112);top.close();p.setColor(0xFF482D25);c.drawPath(top,p);for(int i=0;i<17;i++)oval(c,121+(i*31)%94,65+(i*17)%36,3,2,0xFFF9E9D0);oval(c,84,92,21,20,0xFFB75849);oval(c,91,111,18,17,0xFFCB6754);}
             else{for(int i=0;i<13;i++){float x=91+(i*37)%130,y=53+(i*19)%61;oval(c,x,y,39,16,i%2==0?0xFF95AD6B:0xFF597F4D);}for(int i=0;i<7;i++){float x=104+(i*43)%101,y=61+(i*23)%48;oval(c,x,y,23,18,0xFFC56B4D);oval(c,x+5,y+4,11,9,0xFFEB9970);}p.setColor(0xFFEBCB85);p.setStrokeWidth(6);p.setStrokeCap(Paint.Cap.ROUND);for(int i=0;i<8;i++){float x=100+(i*23)%102,y=63+(i*29)%50;c.drawLine(x,y,x+21,y+9,p);}}
