@@ -3,11 +3,19 @@ package se.steffy.receptboken;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.os.Build;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -22,6 +30,9 @@ import java.util.concurrent.Executors;
  * Keeps all functionality from SafeMainActivity, but avoids keeping the screen
  * awake while merely reading a recipe and loads recipe images as cached,
  * downsampled previews instead of decoding full-resolution images repeatedly.
+ *
+ * It also keeps the active recipe editor field above the on-screen keyboard,
+ * including long multi-line ingredient/instruction fields.
  */
 public class BatteryOptimizedActivity extends SafeMainActivity {
 
@@ -32,12 +43,105 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
         }
     };
 
+    private ScrollView keyboardScroll;
+    private int keyboardInset;
+
+    @Override
+    void base() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+
+        keyboardScroll = new ScrollView(this);
+        keyboardScroll.setFillViewport(true);
+        keyboardScroll.setClipToPadding(false);
+        keyboardScroll.setVerticalScrollBarEnabled(true);
+
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), top(), dp(18), dp(28));
+        root.setBackgroundColor(BG);
+        keyboardScroll.addView(root);
+        setContentView(keyboardScroll);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            keyboardScroll.setOnApplyWindowInsetsListener((v, insets) -> {
+                int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                int bars = insets.getInsets(WindowInsets.Type.systemBars()).bottom;
+                keyboardInset = Math.max(0, ime - bars);
+                keyboardScroll.setPadding(0, 0, 0, keyboardInset);
+                if (keyboardInset > 0) {
+                    View focused = getCurrentFocus();
+                    if (focused instanceof EditText) keepEditorCursorVisible((EditText) focused, 80);
+                }
+                return insets;
+            });
+            keyboardScroll.requestApplyInsets();
+        }
+    }
+
+    @Override
+    EditText field(String hint, String val, boolean multi) {
+        EditText editor = super.field(hint, val, multi);
+        editor.setSingleLine(false);
+        if (!multi) editor.setMaxLines(1);
+        else {
+            editor.setMinLines(4);
+            editor.setGravity(Gravity.TOP | Gravity.START);
+            editor.setVerticalScrollBarEnabled(true);
+        }
+
+        editor.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) keepEditorCursorVisible(editor, 260);
+        });
+        editor.setOnClickListener(v -> keepEditorCursorVisible(editor, 120));
+        editor.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                if (editor.hasFocus()) keepEditorCursorVisible(editor, 45);
+            }
+        });
+        return editor;
+    }
+
+    private void keepEditorCursorVisible(EditText editor, long delayMs) {
+        if (keyboardScroll == null || editor == null) return;
+        editor.postDelayed(() -> {
+            if (keyboardScroll == null || !editor.hasFocus()) return;
+
+            int cursorBottomInEditor = editor.getPaddingTop();
+            try {
+                if (editor.getLayout() != null) {
+                    int selection = Math.max(0, editor.getSelectionStart());
+                    int line = editor.getLayout().getLineForOffset(selection);
+                    cursorBottomInEditor += editor.getLayout().getLineBottom(line);
+                } else {
+                    cursorBottomInEditor += editor.getHeight();
+                }
+            } catch (Exception ignored) {
+                cursorBottomInEditor += editor.getHeight();
+            }
+
+            int cursorBottom = editor.getTop() + cursorBottomInEditor;
+            int currentTop = keyboardScroll.getScrollY();
+            int visibleHeight = keyboardScroll.getHeight() - keyboardScroll.getPaddingBottom();
+            int safeBottom = currentTop + Math.max(dp(120), visibleHeight - dp(110));
+            int safeTop = currentTop + dp(50);
+
+            if (cursorBottom > safeBottom) {
+                keyboardScroll.smoothScrollBy(0, cursorBottom - safeBottom + dp(40));
+            } else if (editor.getTop() < safeTop) {
+                keyboardScroll.smoothScrollBy(0, editor.getTop() - safeTop);
+            }
+        }, delayMs);
+    }
+
     @Override
     void detail(Recipe r, int amount) {
         cancelTimer();
         base();
-        // Important battery change: ordinary recipe reading follows the phone's
-        // normal screen timeout. Only the dedicated cooking mode keeps it awake.
+        // Ordinary recipe reading follows the phone's normal screen timeout.
+        // Only the dedicated cooking mode keeps the screen awake.
         Button back = btn("‹ Tillbaka");
         back.setOnClickListener(v -> home());
         root.addView(back, new LinearLayout.LayoutParams(-2, -2));
