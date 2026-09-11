@@ -29,7 +29,7 @@ public class RecoveryActivity extends MainActivity {
     private TextView tipsPreview;
 
     @Override
-    protected void onCreate(android.os.Bundle state) {
+    public void onCreate(android.os.Bundle state) {
         super.onCreate(state);
         Toast.makeText(this, "Receptboken 1.18", Toast.LENGTH_SHORT).show();
     }
