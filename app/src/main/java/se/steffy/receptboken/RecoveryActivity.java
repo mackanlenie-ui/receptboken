@@ -7,6 +7,7 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Gravity;
@@ -22,12 +23,12 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Receptboken 1.23.
+ * Receptboken 1.24.
  *
- * One UI on the test phone crashes if Android tries to draw a ScrollBarDrawable,
- * so every visual scrollbar stays disabled. Long recipe fields still scroll
- * internally. The active field is also moved above the keyboard and the cursor
- * line is kept visible while the user types.
+ * Long recipe text is placed inside its own fixed-height ScrollView. The
+ * EditText itself grows with the text, while the inner ScrollView performs the
+ * scrolling. This avoids One UI's broken EditText scrollbar drawable and also
+ * prevents the outer recipe page from stealing the drag gesture.
  */
 public class RecoveryActivity extends MainActivity {
 
@@ -40,7 +41,7 @@ public class RecoveryActivity extends MainActivity {
     public void onCreate(Bundle state) {
         installCrashRecorder();
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 1.23", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 1.24", Toast.LENGTH_SHORT).show();
         getWindow().getDecorView().postDelayed(this::showSavedCrashIfAny, 500);
     }
 
@@ -64,33 +65,66 @@ public class RecoveryActivity extends MainActivity {
 
     @Override
     EditText field(String hint, String val, boolean multi) {
-        EditText editor = super.field(hint, val, multi);
-        if (!multi) return editor;
+        if (!multi) return super.field(hint, val, false);
 
-        // Fixed-height text area. Text itself scrolls inside the field, but no
-        // visual scrollbar is requested from Android (One UI crash workaround).
-        editor.setMinLines(6);
-        editor.setMaxLines(6);
+        final EditText editor = new EditText(this);
+        editor.setHint(hint);
+        editor.setText(val == null ? "" : val);
+        editor.setTextSize(16);
+        editor.setPadding(dp(12), dp(10), dp(12), dp(16));
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setSingleLine(false);
         editor.setHorizontallyScrolling(false);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE |
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+
+        // The EditText is deliberately NOT the scrolling view. It grows with
+        // its contents and is hosted inside an inner ScrollView.
         editor.setVerticalScrollBarEnabled(false);
         editor.setHorizontalScrollBarEnabled(false);
         editor.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        editor.setMinHeight(dp(190));
 
-        // When typing, make TextView scroll its own content so the cursor line
-        // remains visible, then move the whole field above the keyboard.
+        final ScrollView textScroll = new ScrollView(this);
+        textScroll.setFillViewport(true);
+        textScroll.setVerticalScrollBarEnabled(false);
+        textScroll.setHorizontalScrollBarEnabled(false);
+        textScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        textScroll.setClipToPadding(true);
+        textScroll.addView(editor, new ScrollView.LayoutParams(-1, -2));
+
+        LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(190));
+        boxParams.setMargins(0, dp(2), 0, dp(4));
+        root.addView(textScroll, boxParams);
+
+        // While the finger is inside this field, the outer recipe page must not
+        // intercept the vertical drag. The inner ScrollView then scrolls the
+        // recipe text exactly like a normal text editor.
+        View.OnTouchListener keepGestureInsideField = (v, event) -> {
+            if (pageScroll != null) {
+                int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+                    pageScroll.requestDisallowInterceptTouchEvent(true);
+                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    pageScroll.requestDisallowInterceptTouchEvent(false);
+                }
+            }
+            return false;
+        };
+        editor.setOnTouchListener(keepGestureInsideField);
+        textScroll.setOnTouchListener(keepGestureInsideField);
+
+        // As text is added, keep the caret line visible inside the inner field.
         editor.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
             @Override public void afterTextChanged(Editable s) {
                 if (!editor.hasFocus()) return;
                 editor.post(() -> {
-                    try {
-                        editor.bringPointIntoView(Math.max(0, editor.getSelectionStart()));
-                    } catch (Throwable ignored) {}
-                    keepFieldAboveKeyboard(editor);
+                    revealCaret(textScroll, editor);
+                    keepFieldAboveKeyboard(textScroll);
                 });
             }
         });
@@ -98,38 +132,40 @@ public class RecoveryActivity extends MainActivity {
         editor.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 editor.postDelayed(() -> {
-                    try {
-                        editor.bringPointIntoView(Math.max(0, editor.getSelectionStart()));
-                    } catch (Throwable ignored) {}
-                    keepFieldAboveKeyboard(editor);
+                    revealCaret(textScroll, editor);
+                    keepFieldAboveKeyboard(textScroll);
                 }, 250);
             }
         });
 
-        // Finger drag inside the text area scrolls the text field rather than
-        // the surrounding recipe page.
-        editor.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN ||
-                    event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
-            } else if (event.getActionMasked() == MotionEvent.ACTION_UP ||
-                    event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(false);
-                editor.post(() -> keepFieldAboveKeyboard(editor));
-            }
-            return false;
-        });
-
+        editor.setOnClickListener(v -> editor.post(() -> revealCaret(textScroll, editor)));
         return editor;
     }
 
-    /**
-     * Scroll the outer recipe page just enough to place the complete active
-     * long-text field above the keyboard. getWindowVisibleDisplayFrame() gives
-     * us the currently visible area after the Samsung keyboard has appeared.
-     */
-    private void keepFieldAboveKeyboard(EditText editor) {
-        if (pageScroll == null || editor == null || !editor.hasFocus()) return;
+    private void revealCaret(ScrollView textScroll, EditText editor) {
+        try {
+            if (editor.getLayout() == null || textScroll.getHeight() <= 0) return;
+            int offset = Math.max(0, Math.min(editor.getSelectionStart(), editor.length()));
+            int line = editor.getLayout().getLineForOffset(offset);
+            int lineTop = editor.getLayout().getLineTop(line) + editor.getCompoundPaddingTop();
+            int lineBottom = editor.getLayout().getLineBottom(line) + editor.getCompoundPaddingTop();
+
+            int currentTop = textScroll.getScrollY();
+            int currentBottom = currentTop + textScroll.getHeight();
+            int margin = dp(30);
+
+            if (lineBottom + margin > currentBottom) {
+                textScroll.smoothScrollTo(0, Math.max(0, lineBottom + margin - textScroll.getHeight()));
+            } else if (lineTop - margin < currentTop) {
+                textScroll.smoothScrollTo(0, Math.max(0, lineTop - margin));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Keep the complete long-text box above the on-screen keyboard. */
+    private void keepFieldAboveKeyboard(View fieldBox) {
+        if (pageScroll == null || fieldBox == null) return;
 
         pageScroll.post(() -> {
             try {
@@ -137,11 +173,11 @@ public class RecoveryActivity extends MainActivity {
                 getWindow().getDecorView().getWindowVisibleDisplayFrame(visible);
 
                 int[] location = new int[2];
-                editor.getLocationInWindow(location);
+                fieldBox.getLocationInWindow(location);
                 int fieldTop = location[1];
-                int fieldBottom = fieldTop + editor.getHeight();
-                int safeBottom = visible.bottom - dp(18);
-                int safeTop = visible.top + dp(12);
+                int fieldBottom = fieldTop + fieldBox.getHeight();
+                int safeBottom = visible.bottom - dp(14);
+                int safeTop = visible.top + dp(10);
 
                 if (fieldBottom > safeBottom) {
                     pageScroll.smoothScrollBy(0, fieldBottom - safeBottom);
