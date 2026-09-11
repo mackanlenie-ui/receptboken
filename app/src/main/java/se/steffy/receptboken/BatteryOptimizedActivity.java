@@ -30,9 +30,6 @@ import java.util.concurrent.Executors;
  * Keeps all functionality from SafeMainActivity, but avoids keeping the screen
  * awake while merely reading a recipe and loads recipe images as cached,
  * downsampled previews instead of decoding full-resolution images repeatedly.
- *
- * It also keeps the active recipe editor field above the on-screen keyboard,
- * including long multi-line ingredient/instruction fields.
  */
 public class BatteryOptimizedActivity extends SafeMainActivity {
 
@@ -44,7 +41,6 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
     };
 
     private ScrollView keyboardScroll;
-    private int keyboardInset;
 
     @Override
     void base() {
@@ -67,12 +63,7 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
             keyboardScroll.setOnApplyWindowInsetsListener((v, insets) -> {
                 int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
                 int bars = insets.getInsets(WindowInsets.Type.systemBars()).bottom;
-                keyboardInset = Math.max(0, ime - bars);
-                keyboardScroll.setPadding(0, 0, 0, keyboardInset);
-                if (keyboardInset > 0) {
-                    View focused = getCurrentFocus();
-                    if (focused instanceof EditText) keepEditorCursorVisible((EditText) focused, 80);
-                }
+                keyboardScroll.setPadding(0, 0, 0, Math.max(0, ime - bars));
                 return insets;
             });
             keyboardScroll.requestApplyInsets();
@@ -82,66 +73,56 @@ public class BatteryOptimizedActivity extends SafeMainActivity {
     @Override
     EditText field(String hint, String val, boolean multi) {
         EditText editor = super.field(hint, val, multi);
-        editor.setSingleLine(false);
-        if (!multi) editor.setMaxLines(1);
-        else {
-            editor.setMinLines(4);
+        editor.setHorizontallyScrolling(false);
+
+        if (multi) {
+            // Viktigt: låt inte långa receptfält växa ned bakom tangentbordet.
+            // Fältet har en fast, bekväm höjd och texten rullas INUTI fältet.
+            editor.setMinLines(5);
+            editor.setMaxLines(5);
             editor.setGravity(Gravity.TOP | Gravity.START);
             editor.setVerticalScrollBarEnabled(true);
+            editor.setScrollbarFadingEnabled(false);
+            editor.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+            editor.setPadding(dp(12), dp(12), dp(12), dp(12));
+        } else {
+            editor.setSingleLine(true);
         }
 
-        editor.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) keepEditorCursorVisible(editor, 260);
-        });
-        editor.setOnClickListener(v -> keepEditorCursorVisible(editor, 120));
+        // När man skriver längst ned i ett långt flerradigt fält sköter EditText
+        // sin egen interna scroll och markören hålls synlig ovanför tangentbordet.
         editor.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
             @Override public void afterTextChanged(Editable s) {
-                if (editor.hasFocus()) keepEditorCursorVisible(editor, 45);
+                if (multi && editor.hasFocus()) {
+                    editor.post(() -> {
+                        try {
+                            int pos = Math.max(0, editor.getSelectionStart());
+                            if (editor.getLayout() != null) {
+                                int line = editor.getLayout().getLineForOffset(pos);
+                                int y = editor.getLayout().getLineTop(line);
+                                int maxY = Math.max(0, editor.getLayout().getHeight() - editor.getHeight() + editor.getCompoundPaddingTop() + editor.getCompoundPaddingBottom());
+                                editor.scrollTo(0, Math.min(Math.max(0, y - dp(24)), maxY));
+                            }
+                        } catch (Exception ignored) {}
+                    });
+                }
+            }
+        });
+
+        editor.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus && keyboardScroll != null) {
+                editor.postDelayed(() -> keyboardScroll.requestChildFocus(editor, editor), 180);
             }
         });
         return editor;
-    }
-
-    private void keepEditorCursorVisible(EditText editor, long delayMs) {
-        if (keyboardScroll == null || editor == null) return;
-        editor.postDelayed(() -> {
-            if (keyboardScroll == null || !editor.hasFocus()) return;
-
-            int cursorBottomInEditor = editor.getPaddingTop();
-            try {
-                if (editor.getLayout() != null) {
-                    int selection = Math.max(0, editor.getSelectionStart());
-                    int line = editor.getLayout().getLineForOffset(selection);
-                    cursorBottomInEditor += editor.getLayout().getLineBottom(line);
-                } else {
-                    cursorBottomInEditor += editor.getHeight();
-                }
-            } catch (Exception ignored) {
-                cursorBottomInEditor += editor.getHeight();
-            }
-
-            int cursorBottom = editor.getTop() + cursorBottomInEditor;
-            int currentTop = keyboardScroll.getScrollY();
-            int visibleHeight = keyboardScroll.getHeight() - keyboardScroll.getPaddingBottom();
-            int safeBottom = currentTop + Math.max(dp(120), visibleHeight - dp(110));
-            int safeTop = currentTop + dp(50);
-
-            if (cursorBottom > safeBottom) {
-                keyboardScroll.smoothScrollBy(0, cursorBottom - safeBottom + dp(40));
-            } else if (editor.getTop() < safeTop) {
-                keyboardScroll.smoothScrollBy(0, editor.getTop() - safeTop);
-            }
-        }, delayMs);
     }
 
     @Override
     void detail(Recipe r, int amount) {
         cancelTimer();
         base();
-        // Ordinary recipe reading follows the phone's normal screen timeout.
-        // Only the dedicated cooking mode keeps the screen awake.
         Button back = btn("‹ Tillbaka");
         back.setOnClickListener(v -> home());
         root.addView(back, new LinearLayout.LayoutParams(-2, -2));
