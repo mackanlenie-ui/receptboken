@@ -36,15 +36,17 @@ jobs:
             adb install app/build/outputs/apk/debug/app-debug.apk
             adb shell am instrument -w se.steffy.matfika/se.steffy.receptboken.SmokeTest > smoke-phone.txt
             cat smoke-phone.txt
-            grep -q 'All smoke checks passed' smoke-phone.txt
+            adb logcat -d -s AndroidRuntime > crash-phone.txt
             adb pull /sdcard/Android/data/se.steffy.matfika/files/screenshots screenshots-phone
+            grep -q 'All smoke checks passed' smoke-phone.txt
             adb shell wm size 1600x1000
             adb shell wm density 160
             adb shell pm clear se.steffy.matfika
             adb shell am instrument -w se.steffy.matfika/se.steffy.receptboken.SmokeTest > smoke-desktop.txt
             cat smoke-desktop.txt
-            grep -q 'All smoke checks passed' smoke-desktop.txt
+            adb logcat -d -s AndroidRuntime > crash-desktop.txt
             adb pull /sdcard/Android/data/se.steffy.matfika/files/screenshots screenshots-desktop
+            grep -q 'All smoke checks passed' smoke-desktop.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,4 +54,5 @@ jobs:
           path: |
             screenshots-*
             smoke-*.txt
+            crash-*.txt
             app/build/reports/lint-results-debug.html

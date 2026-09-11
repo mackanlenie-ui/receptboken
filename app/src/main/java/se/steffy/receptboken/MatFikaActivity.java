@@ -126,7 +126,7 @@ public class MatFikaActivity extends BatteryOptimizedActivity {
         addNav(nav,"Recept",!favoritesOnly,()->{favoritesOnly=false;home();});addNav(nav,"Favoriter",favoritesOnly,()->{favoritesOnly=true;home();});addNav(nav,"Inköp",false,()->shopping());addNav(nav,"Veckomeny",false,()->weeklyMenu());shell.addView(nav,new LinearLayout.LayoutParams(-1,-2));
     }
     void addNav(LinearLayout nav,String label,boolean active,Runnable action){Button b=active?btn(label):quiet(label);b.setTextSize(11);b.setPadding(dp(3),dp(6),dp(3),dp(6));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(50),1);p.setMargins(dp(3),0,dp(3),0);nav.addView(b,p);b.setOnClickListener(v->action.run());}
-    static boolean isBaking(Recipe r){String c=(r.category+" "+r.name).toLowerCase(Locale.ROOT);return c.matches(".*(bakning|kakor|kaka|muffin|bulle|bullar|chokladboll|smulpaj|sockerkaka|efterrätt).*");}
+    static boolean isBaking(Recipe r){if(r.category.toLowerCase(Locale.ROOT).startsWith("mat"))return false;String c=(r.category+" "+r.name).toLowerCase(Locale.ROOT);return c.matches(".*(bakning|kakor|kaka|muffin|bulle|bullar|chokladboll|smulpaj|sockerkaka|efterrätt).*");}
     @Override void render(String q){
         if(list==null)return;list.removeAllViews();ArrayList<Recipe> ordered=new ArrayList<>(recipes);
         if(sortMode.equals("A–Ö"))Collections.sort(ordered,(a,b)->java.text.Collator.getInstance(new Locale("sv","SE")).compare(a.name,b.name));
