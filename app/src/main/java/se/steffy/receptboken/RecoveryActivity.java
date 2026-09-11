@@ -4,7 +4,10 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
+import android.graphics.Rect;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -19,20 +22,25 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Version 1.22 works around a Samsung/One UI scrollbar rendering crash.
- * Long recipe fields still scroll internally, but no scrollbar drawable is
- * requested from Android.
+ * Receptboken 1.23.
+ *
+ * One UI on the test phone crashes if Android tries to draw a ScrollBarDrawable,
+ * so every visual scrollbar stays disabled. Long recipe fields still scroll
+ * internally. The active field is also moved above the keyboard and the cursor
+ * line is kept visible while the user types.
  */
 public class RecoveryActivity extends MainActivity {
 
     private static final String DIAG_PREFS = "receptboken_diagnostics";
     private static final String LAST_CRASH = "last_crash";
 
+    private ScrollView pageScroll;
+
     @Override
     public void onCreate(Bundle state) {
         installCrashRecorder();
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 1.22", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 1.23", Toast.LENGTH_SHORT).show();
         getWindow().getDecorView().postDelayed(this::showSavedCrashIfAny, 500);
     }
 
@@ -40,19 +48,18 @@ public class RecoveryActivity extends MainActivity {
     void base() {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        // Workaround for the One UI/Android crash in View.onDrawScrollBars().
-        scroll.setVerticalScrollBarEnabled(false);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        pageScroll = new ScrollView(this);
+        pageScroll.setFillViewport(true);
+        pageScroll.setVerticalScrollBarEnabled(false);
+        pageScroll.setHorizontalScrollBarEnabled(false);
+        pageScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), top(), dp(18), dp(28));
         root.setBackgroundColor(BG);
-        scroll.addView(root);
-        setContentView(scroll);
+        pageScroll.addView(root);
+        setContentView(pageScroll);
     }
 
     @Override
@@ -60,8 +67,8 @@ public class RecoveryActivity extends MainActivity {
         EditText editor = super.field(hint, val, multi);
         if (!multi) return editor;
 
-        // The field still scrolls internally, but the visual scrollbar is
-        // disabled because One UI is returning a null ScrollBarDrawable.
+        // Fixed-height text area. Text itself scrolls inside the field, but no
+        // visual scrollbar is requested from Android (One UI crash workaround).
         editor.setMinLines(6);
         editor.setMaxLines(6);
         editor.setGravity(Gravity.TOP | Gravity.START);
@@ -72,8 +79,35 @@ public class RecoveryActivity extends MainActivity {
         editor.setOverScrollMode(View.OVER_SCROLL_NEVER);
         editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
 
-        // Let the EditText consume vertical drag gestures while the finger is
-        // inside it, so the text itself can be scrolled instead of the page.
+        // When typing, make TextView scroll its own content so the cursor line
+        // remains visible, then move the whole field above the keyboard.
+        editor.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) {
+                if (!editor.hasFocus()) return;
+                editor.post(() -> {
+                    try {
+                        editor.bringPointIntoView(Math.max(0, editor.getSelectionStart()));
+                    } catch (Throwable ignored) {}
+                    keepFieldAboveKeyboard(editor);
+                });
+            }
+        });
+
+        editor.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                editor.postDelayed(() -> {
+                    try {
+                        editor.bringPointIntoView(Math.max(0, editor.getSelectionStart()));
+                    } catch (Throwable ignored) {}
+                    keepFieldAboveKeyboard(editor);
+                }, 250);
+            }
+        });
+
+        // Finger drag inside the text area scrolls the text field rather than
+        // the surrounding recipe page.
         editor.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN ||
                     event.getActionMasked() == MotionEvent.ACTION_MOVE) {
@@ -81,17 +115,47 @@ public class RecoveryActivity extends MainActivity {
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP ||
                     event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                 if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(false);
+                editor.post(() -> keepFieldAboveKeyboard(editor));
             }
             return false;
         });
+
         return editor;
+    }
+
+    /**
+     * Scroll the outer recipe page just enough to place the complete active
+     * long-text field above the keyboard. getWindowVisibleDisplayFrame() gives
+     * us the currently visible area after the Samsung keyboard has appeared.
+     */
+    private void keepFieldAboveKeyboard(EditText editor) {
+        if (pageScroll == null || editor == null || !editor.hasFocus()) return;
+
+        pageScroll.post(() -> {
+            try {
+                Rect visible = new Rect();
+                getWindow().getDecorView().getWindowVisibleDisplayFrame(visible);
+
+                int[] location = new int[2];
+                editor.getLocationInWindow(location);
+                int fieldTop = location[1];
+                int fieldBottom = fieldTop + editor.getHeight();
+                int safeBottom = visible.bottom - dp(18);
+                int safeTop = visible.top + dp(12);
+
+                if (fieldBottom > safeBottom) {
+                    pageScroll.smoothScrollBy(0, fieldBottom - safeBottom);
+                } else if (fieldTop < safeTop) {
+                    pageScroll.smoothScrollBy(0, fieldTop - safeTop);
+                }
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     @Override
     Button btn(String text) {
         Button button = super.btn(text);
-        // Prevent a second tap on "Redigera" from landing on "Välj bild" when
-        // the edit screen replaces the recipe details at almost the same spot.
         if (text != null && (text.contains("Välj bild") || text.contains("Byt bild"))) {
             button.setEnabled(false);
             button.postDelayed(() -> button.setEnabled(true), 1800);
@@ -130,7 +194,7 @@ public class RecoveryActivity extends MainActivity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Felrapport från senaste kraschen")
-                .setMessage("Om appen fortfarande kraschar kan du kopiera rapporten och skicka den till mig. Då ser vi exakt vilken kodrad som orsakar felet.")
+                .setMessage("Om appen fortfarande kraschar kan du kopiera rapporten och skicka den till mig.")
                 .setView(text)
                 .setNegativeButton("Stäng", null)
                 .setPositiveButton("Kopiera", (d, w) -> {
