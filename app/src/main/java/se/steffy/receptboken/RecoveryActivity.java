@@ -1,24 +1,18 @@
 package se.steffy.receptboken;
 
 import android.app.AlertDialog;
-import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
-import android.content.Intent;
-import android.graphics.drawable.ColorDrawable;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.text.InputType;
-import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -26,287 +20,120 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Receptboken 2.1
+ * Receptboken 2.2
  *
- * Long recipe text is edited in a dedicated full-screen editor. The recipe form
- * itself never contains nested scrolling text fields. This avoids the One UI
- * scrollbar crash and also guarantees that long text can be scrolled while the
- * keyboard is open.
+ * Redigeraren använder samma fungerande modell som Mat & Fika:
+ * - en enda ScrollView för hela sidan
+ * - långa EditText-fält växer med innehållet
+ * - inga nästlade scrollfält
+ * - IME/system-insets läggs på det yttre skalet så sidan går att rulla
+ *   ovanför tangentbordet även på Samsung/One UI.
  */
 public class RecoveryActivity extends MainActivity {
 
     private static final String DIAG_PREFS = "receptboken_diagnostics";
     private static final String LAST_CRASH = "last_crash";
 
-    private ScrollView pageScroll;
-
-    private static final class TextHolder {
-        String value;
-        TextView preview;
-        TextHolder(String value) { this.value = value == null ? "" : value; }
-    }
-
-    private interface TextReceiver {
-        void onDone(String value);
-    }
+    private LinearLayout shell;
+    private ScrollView page;
 
     @Override
     public void onCreate(Bundle state) {
         installCrashRecorder();
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 2.1", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 2.2", Toast.LENGTH_SHORT).show();
         getWindow().getDecorView().postDelayed(this::showSavedCrashIfAny, 500);
     }
 
+    /**
+     * Samma sidmodell som i Mat & Fika. Tangentbordets höjd blir padding på
+     * shell och själva ScrollView:n får därför alltid ett synligt område ovanför
+     * tangentbordet att rulla i.
+     */
     @Override
     void base() {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        pageScroll = new ScrollView(this);
-        pageScroll.setFillViewport(true);
-        pageScroll.setVerticalScrollBarEnabled(false);
-        pageScroll.setHorizontalScrollBarEnabled(false);
-        pageScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        shell = new LinearLayout(this);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setBackgroundColor(BG);
+
+        page = new ScrollView(this);
+        page.setFillViewport(true);
+        page.setVerticalScrollBarEnabled(false);
+        page.setHorizontalScrollBarEnabled(false);
+        page.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        int windowDp = getResources().getConfiguration().screenWidthDp;
+        int side = Math.max(dp(18), dp((windowDp - 1120) / 2));
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), top(), dp(18), dp(80));
+        root.setPadding(side, dp(16), side, dp(30));
         root.setBackgroundColor(BG);
-        pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
-        setContentView(pageScroll);
+        root.setFocusableInTouchMode(true);
+
+        page.addView(root, new ScrollView.LayoutParams(-1, -2));
+        shell.addView(page, new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(shell);
+
+        shell.setOnApplyWindowInsetsListener((v, insets) -> {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                int keyboard = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard));
+            } else {
+                v.setPadding(
+                        insets.getSystemWindowInsetLeft(),
+                        insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(),
+                        insets.getSystemWindowInsetBottom());
+            }
+            return insets;
+        });
+        shell.requestApplyInsets();
     }
 
+    /**
+     * Kopierad redigeringsprincip från Mat & Fika. Viktigt: ett långt fält har
+     * ingen maxhöjd och ingen egen scroll. Det växer i stället, så den enda
+     * scrollägaren är hela sidan.
+     */
     @Override
-    void edit(Recipe old, boolean importedAsNew) {
-        cancelTimer();
-        base();
-        selectedImage = old == null ? "" : old.image;
+    EditText field(String hint, String value, boolean multi) {
+        TextView label = txt(hint, 14, MUTED);
+        label.setPadding(dp(3), dp(16), 0, dp(7));
+        root.addView(label);
 
-        Button back = btn("‹ Avbryt");
-        back.setOnClickListener(v -> {
-            if (old == null || importedAsNew) home();
-            else detail(old, old.amount);
-        });
-        root.addView(back, new LinearLayout.LayoutParams(-2, -2));
-
-        title(importedAsNew ? "Importerat recept – kontrollera" : old == null ? "Nytt recept" : "Redigera recept");
-        root.addView(txt("Tryck på Redigera under ett långt fält. Då öppnas en stor textruta som går att rulla medan du skriver.", 14, MUTED));
-
-        EditText name = normalField("Namn på maträtten", old == null ? "" : old.name);
-        EditText cat = normalField("Kategori", old == null ? "" : old.category);
-        EditText time = numberField("Tid i minuter", old == null ? "" : String.valueOf(old.time));
-        EditText amount = numberField("Antal", old == null ? "" : String.valueOf(old.amount));
-        EditText unit = normalField("Enhet, t.ex. portioner, st eller bitar", old == null ? "portioner" : old.unit);
-
-        TextHolder ingredients = addLongSection("Ingredienser", "En ingrediens per rad", old == null ? "" : old.ingredients);
-        TextHolder steps = addLongSection("Gör så här", "Skriv stegen här", old == null ? "" : old.steps);
-        TextHolder tips = addLongSection("Tips & förvaring", "Valfritt", old == null ? "" : old.tips);
-
-        if (importedAsNew) {
-            root.addView(txt("Kontrollera den automatiskt avlästa texten innan du sparar.", 14, MUTED));
-        }
-
-        Button image = btn(selectedImage.isEmpty() ? "📷 Välj bild" : "📷 Byt bild");
-        full(image, 14);
-        image.setOnClickListener(v -> {
-            try {
-                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                i.setType("image/*");
-                i.addCategory(Intent.CATEGORY_OPENABLE);
-                startActivityForResult(i, PICK_IMAGE);
-            } catch (Exception e) {
-                Toast.makeText(this, "Kunde inte öppna bildväljaren", Toast.LENGTH_SHORT).show();
-            }
-        });
-
-        Button saveBtn = btn("Spara recept");
-        full(saveBtn, 8);
-
-        if (old != null && !importedAsNew) {
-            Button del = btn("Ta bort recept");
-            del.setBackground(round(RED));
-            full(del, 3);
-            del.setOnClickListener(v -> new AlertDialog.Builder(this)
-                    .setTitle("Ta bort receptet?")
-                    .setNegativeButton("Avbryt", null)
-                    .setPositiveButton("Ta bort", (d, w) -> {
-                        recipes.remove(old);
-                        removeRecipeFromWeek(old.name);
-                        save();
-                        saveWeek();
-                        home();
-                    }).show());
-        }
-
-        saveBtn.setOnClickListener(v -> {
-            if (name.getText().toString().trim().isEmpty()) {
-                name.setError("Skriv ett namn");
-                name.requestFocus();
-                return;
-            }
-
-            Recipe r = (old == null || importedAsNew) ? new Recipe() : old;
-            String oldName = (old != null && !importedAsNew) ? old.name : "";
-
-            r.name = name.getText().toString().trim();
-            r.category = cat.getText().toString().trim().isEmpty() ? "Övrigt" : cat.getText().toString().trim();
-            r.time = num(time, 0);
-            r.amount = Math.max(1, num(amount, 1));
-            r.unit = unit.getText().toString().trim().isEmpty() ? "portioner" : unit.getText().toString().trim();
-            r.ingredients = ingredients.value.trim();
-            r.steps = steps.value.trim();
-            r.tips = tips.value.trim();
-            r.image = selectedImage;
-
-            if (old == null || importedAsNew) recipes.add(0, r);
-            else if (!oldName.equals(r.name)) renameRecipeInWeek(oldName, r.name);
-
-            save();
-            saveWeek();
-            detail(r, r.amount);
-        });
-    }
-
-    private EditText normalField(String hint, String value) {
         EditText e = new EditText(this);
-        e.setHint(hint);
         e.setText(value == null ? "" : value);
-        e.setTextSize(16);
-        e.setSingleLine(true);
-        e.setPadding(dp(12), dp(10), dp(12), dp(10));
+        e.setHint(hint);
+        e.setTextColor(TEXT);
+        e.setHintTextColor(MUTED);
+        e.setTextSize(17);
+        e.setPadding(dp(16), dp(12), dp(16), dp(12));
+        e.setBackground(round(Color.WHITE));
+        e.setSingleLine(!multi);
+        e.setHorizontallyScrolling(false);
         e.setVerticalScrollBarEnabled(false);
         e.setHorizontalScrollBarEnabled(false);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.setMargins(0, dp(2), 0, dp(3));
-        root.addView(e, p);
-        return e;
-    }
+        e.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        e.setInputType(InputType.TYPE_CLASS_TEXT |
+                (multi ? InputType.TYPE_TEXT_FLAG_MULTI_LINE : InputType.TYPE_TEXT_FLAG_CAP_SENTENCES));
 
-    private EditText numberField(String hint, String value) {
-        EditText e = normalField(hint, value);
-        e.setInputType(InputType.TYPE_CLASS_NUMBER);
-        return e;
-    }
-
-    private TextHolder addLongSection(String label, String emptyHint, String value) {
-        TextHolder holder = new TextHolder(value);
-
-        TextView title = txt(label, 18, TEXT);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        title.setPadding(dp(4), dp(16), dp(4), dp(5));
-        root.addView(title);
-
-        TextView preview = txt(previewText(holder.value, emptyHint), 16, TEXT);
-        preview.setGravity(Gravity.TOP | Gravity.START);
-        preview.setMinLines(3);
-        preview.setMaxLines(5);
-        preview.setPadding(dp(14), dp(12), dp(14), dp(12));
-        preview.setBackground(round(CARD));
-        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, -2);
-        pp.setMargins(0, 0, 0, dp(6));
-        root.addView(preview, pp);
-        holder.preview = preview;
-
-        Button editButton = btn("✏ Redigera " + label.toLowerCase());
-        full(editButton, 0);
-
-        View.OnClickListener open = v -> openFullScreenEditor(label, holder.value, newValue -> {
-            holder.value = newValue;
-            holder.preview.setText(previewText(newValue, emptyHint));
-        });
-        preview.setOnClickListener(open);
-        editButton.setOnClickListener(open);
-
-        return holder;
-    }
-
-    private String previewText(String value, String emptyHint) {
-        if (value == null || value.trim().isEmpty()) return emptyHint;
-        return value;
-    }
-
-    private void openFullScreenEditor(String titleText, String initialText, TextReceiver receiver) {
-        final Dialog dialog = new Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen);
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(18), top(), dp(18), dp(16));
-        panel.setBackgroundColor(BG);
-
-        TextView heading = txt(titleText, 26, TEXT);
-        heading.setTypeface(null, android.graphics.Typeface.BOLD);
-        panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
-
-        TextView help = txt("Skriv och svep upp eller ner direkt i textrutan. Texten rullar inne i rutan medan tangentbordet är öppet.", 14, MUTED);
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
-        hp.setMargins(0, dp(2), 0, dp(8));
-        panel.addView(help, hp);
-
-        LinearLayout actions = new LinearLayout(this);
-        actions.setOrientation(LinearLayout.HORIZONTAL);
-        Button cancel = btn("‹ Avbryt");
-        Button done = btn("✓ Klar");
-        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -2, 1f);
-        left.setMargins(0, 0, dp(5), 0);
-        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1f);
-        right.setMargins(dp(5), 0, 0, 0);
-        actions.addView(cancel, left);
-        actions.addView(done, right);
-        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
-        ap.setMargins(0, 0, 0, dp(8));
-        panel.addView(actions, ap);
-
-        final EditText editor = new EditText(this);
-        editor.setText(initialText == null ? "" : initialText);
-        editor.setTextSize(18);
-        editor.setTextColor(TEXT);
-        editor.setHint("Skriv här…");
-        editor.setHintTextColor(MUTED);
-        editor.setGravity(Gravity.TOP | Gravity.START);
-        editor.setSingleLine(false);
-        editor.setHorizontallyScrolling(false);
-        editor.setInputType(InputType.TYPE_CLASS_TEXT |
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE |
-                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
-        editor.setPadding(dp(14), dp(14), dp(14), dp(14));
-        editor.setBackground(round(CARD));
-        editor.setVerticalScrollBarEnabled(false);
-        editor.setHorizontalScrollBarEnabled(false);
-        editor.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        editor.setMovementMethod(ScrollingMovementMethod.getInstance());
-        editor.setScrollContainer(true);
-        panel.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1f));
-
-        dialog.setContentView(panel);
-        Window window = dialog.getWindow();
-        if (window != null) {
-            window.setBackgroundDrawable(new ColorDrawable(BG));
-            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE |
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        if (hint.equals("Antal") || hint.equals("Tid i minuter")) {
+            e.setInputType(InputType.TYPE_CLASS_NUMBER);
         }
+        if (multi) {
+            e.setMinLines(4);
+            e.setGravity(Gravity.TOP | Gravity.START);
+        }
+        e.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
 
-        cancel.setOnClickListener(v -> dialog.dismiss());
-        done.setOnClickListener(v -> {
-            receiver.onDone(editor.getText().toString());
-            dialog.dismiss();
-        });
-
-        dialog.setOnShowListener(d -> {
-            Window w = dialog.getWindow();
-            if (w != null) w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-            editor.requestFocus();
-            editor.setSelection(editor.length());
-            editor.postDelayed(() -> {
-                try {
-                    InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                    if (imm != null) imm.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT);
-                } catch (Throwable ignored) {}
-            }, 180);
-        });
-
-        dialog.show();
+        root.addView(e, new LinearLayout.LayoutParams(-1, -2));
+        return e;
     }
 
     private void installCrashRecorder() {
@@ -316,7 +143,8 @@ public class RecoveryActivity extends MainActivity {
                 String report = Log.getStackTraceString(error);
                 getSharedPreferences(DIAG_PREFS, MODE_PRIVATE)
                         .edit().putString(LAST_CRASH, report).commit();
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
             if (previous != null) previous.uncaughtException(thread, error);
         });
     }
@@ -326,7 +154,8 @@ public class RecoveryActivity extends MainActivity {
                 .getString(LAST_CRASH, "");
         if (report == null || report.trim().isEmpty()) return;
 
-        getSharedPreferences(DIAG_PREFS, MODE_PRIVATE).edit().remove(LAST_CRASH).apply();
+        getSharedPreferences(DIAG_PREFS, MODE_PRIVATE)
+                .edit().remove(LAST_CRASH).apply();
 
         TextView text = new TextView(this);
         text.setText(report);
