@@ -11,9 +11,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Stable launcher with a recipe editor that never puts the keyboard directly
- * on top of long ingredient/instruction fields. Those fields are previews only
- * and are edited in TextEditorActivity.
+ * Stable launcher with a recipe editor that keeps long text in a separate
+ * full-screen editor. The image picker is briefly disabled when the screen
+ * opens so a previous tap cannot accidentally fall through onto "Välj bild".
  */
 public class RecoveryActivity extends MainActivity {
 
@@ -31,7 +31,7 @@ public class RecoveryActivity extends MainActivity {
     @Override
     public void onCreate(android.os.Bundle state) {
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 1.18", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 1.19", Toast.LENGTH_SHORT).show();
     }
 
     @Override
@@ -54,6 +54,8 @@ public class RecoveryActivity extends MainActivity {
 
         Button image = btn(selectedImage.isEmpty() ? "📷 Välj bild" : "📷 Byt bild");
         full(image, 8);
+        image.setEnabled(false);
+        image.postDelayed(() -> image.setEnabled(true), 700);
 
         EditText name = field("Namn på maträtten", old == null ? "" : old.name, false);
         EditText cat = field("Kategori", old == null ? "" : old.category, false);
@@ -89,10 +91,14 @@ public class RecoveryActivity extends MainActivity {
         }
 
         image.setOnClickListener(v -> {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.setType("image/*");
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(i, PICK_IMAGE);
+            try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.setType("image/*");
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(i, PICK_IMAGE);
+            } catch (Exception e) {
+                Toast.makeText(this, "Kunde inte öppna bildväljaren", Toast.LENGTH_SHORT).show();
+            }
         });
 
         saveBtn.setOnClickListener(v -> {
@@ -140,17 +146,23 @@ public class RecoveryActivity extends MainActivity {
         Button editButton = btn("✏ Redigera " + label.toLowerCase());
         full(editButton, 0);
 
-        Runnable open = () -> {
-            String text = requestCode == EDIT_INGREDIENTS ? currentIngredients
-                    : requestCode == EDIT_STEPS ? currentSteps : currentTips;
+        Runnable open = () -> openLongEditor(editorTitle, requestCode);
+        preview.setOnClickListener(v -> open.run());
+        editButton.setOnClickListener(v -> open.run());
+        return preview;
+    }
+
+    private void openLongEditor(String editorTitle, int requestCode) {
+        String text = requestCode == EDIT_INGREDIENTS ? currentIngredients
+                : requestCode == EDIT_STEPS ? currentSteps : currentTips;
+        try {
             Intent intent = new Intent(this, TextEditorActivity.class);
             intent.putExtra(TextEditorActivity.EXTRA_TITLE, editorTitle);
             intent.putExtra(TextEditorActivity.EXTRA_TEXT, text);
             startActivityForResult(intent, requestCode);
-        };
-        preview.setOnClickListener(v -> open.run());
-        editButton.setOnClickListener(v -> open.run());
-        return preview;
+        } catch (Throwable error) {
+            Toast.makeText(this, "Kunde inte öppna textredigeraren", Toast.LENGTH_LONG).show();
+        }
     }
 
     private String previewText(String value) {
