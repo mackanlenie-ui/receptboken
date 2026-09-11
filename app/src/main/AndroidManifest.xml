@@ -6,7 +6,7 @@
             android:exported="false" />
 
         <activity
-            android:name=".EditorFixedActivity"
+            android:name=".BatteryOptimizedActivity"
             android:screenOrientation="unspecified"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
             android:exported="true">
