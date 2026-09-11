@@ -6,6 +6,12 @@
             android:exported="false" />
 
         <activity
+            android:name=".TextEditorActivity"
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="false" />
+
+        <activity
             android:name=".RecoveryActivity"
             android:screenOrientation="unspecified"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
