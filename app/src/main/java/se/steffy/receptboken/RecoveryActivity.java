@@ -1,20 +1,23 @@
 package se.steffy.receptboken;
 
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Rect;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
-import android.text.Editable;
 import android.text.InputType;
-import android.text.TextWatcher;
+import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -23,12 +26,12 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Receptboken 2.0
+ * Receptboken 2.1
  *
- * Recipe editing is rebuilt around one single page ScrollView. Long text fields
- * never have their own scrolling area; instead they expand with the text and the
- * whole page scrolls. This avoids nested scrolling and the One UI scrollbar
- * rendering crash seen on the S23 Ultra.
+ * Long recipe text is edited in a dedicated full-screen editor. The recipe form
+ * itself never contains nested scrolling text fields. This avoids the One UI
+ * scrollbar crash and also guarantees that long text can be scrolled while the
+ * keyboard is open.
  */
 public class RecoveryActivity extends MainActivity {
 
@@ -37,12 +40,22 @@ public class RecoveryActivity extends MainActivity {
 
     private ScrollView pageScroll;
 
+    private static final class TextHolder {
+        String value;
+        TextView preview;
+        TextHolder(String value) { this.value = value == null ? "" : value; }
+    }
+
+    private interface TextReceiver {
+        void onDone(String value);
+    }
+
     @Override
     public void onCreate(Bundle state) {
         installCrashRecorder();
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 2.0", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 2.1", Toast.LENGTH_SHORT).show();
         getWindow().getDecorView().postDelayed(this::showSavedCrashIfAny, 500);
     }
 
@@ -58,7 +71,7 @@ public class RecoveryActivity extends MainActivity {
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), top(), dp(18), dp(220));
+        root.setPadding(dp(18), top(), dp(18), dp(80));
         root.setBackgroundColor(BG);
         pageScroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         setContentView(pageScroll);
@@ -78,7 +91,7 @@ public class RecoveryActivity extends MainActivity {
         root.addView(back, new LinearLayout.LayoutParams(-2, -2));
 
         title(importedAsNew ? "Importerat recept – kontrollera" : old == null ? "Nytt recept" : "Redigera recept");
-        root.addView(txt("Skriv direkt i fälten. Långa fält växer och hela sidan går att rulla medan tangentbordet är öppet.", 14, MUTED));
+        root.addView(txt("Tryck på Redigera under ett långt fält. Då öppnas en stor textruta som går att rulla medan du skriver.", 14, MUTED));
 
         EditText name = normalField("Namn på maträtten", old == null ? "" : old.name);
         EditText cat = normalField("Kategori", old == null ? "" : old.category);
@@ -86,12 +99,9 @@ public class RecoveryActivity extends MainActivity {
         EditText amount = numberField("Antal", old == null ? "" : String.valueOf(old.amount));
         EditText unit = normalField("Enhet, t.ex. portioner, st eller bitar", old == null ? "portioner" : old.unit);
 
-        TextView ingTitle = sectionTitle("Ingredienser");
-        EditText ing = longField("En ingrediens per rad", old == null ? "" : old.ingredients);
-        TextView stepsTitle = sectionTitle("Gör så här");
-        EditText steps = longField("Skriv stegen här", old == null ? "" : old.steps);
-        TextView tipsTitle = sectionTitle("Tips & förvaring");
-        EditText tips = longField("Valfritt", old == null ? "" : old.tips);
+        TextHolder ingredients = addLongSection("Ingredienser", "En ingrediens per rad", old == null ? "" : old.ingredients);
+        TextHolder steps = addLongSection("Gör så här", "Skriv stegen här", old == null ? "" : old.steps);
+        TextHolder tips = addLongSection("Tips & förvaring", "Valfritt", old == null ? "" : old.tips);
 
         if (importedAsNew) {
             root.addView(txt("Kontrollera den automatiskt avlästa texten innan du sparar.", 14, MUTED));
@@ -144,9 +154,9 @@ public class RecoveryActivity extends MainActivity {
             r.time = num(time, 0);
             r.amount = Math.max(1, num(amount, 1));
             r.unit = unit.getText().toString().trim().isEmpty() ? "portioner" : unit.getText().toString().trim();
-            r.ingredients = ing.getText().toString().trim();
-            r.steps = steps.getText().toString().trim();
-            r.tips = tips.getText().toString().trim();
+            r.ingredients = ingredients.value.trim();
+            r.steps = steps.value.trim();
+            r.tips = tips.value.trim();
             r.image = selectedImage;
 
             if (old == null || importedAsNew) recipes.add(0, r);
@@ -158,14 +168,6 @@ public class RecoveryActivity extends MainActivity {
         });
     }
 
-    private TextView sectionTitle(String text) {
-        TextView label = txt(text, 18, TEXT);
-        label.setTypeface(null, android.graphics.Typeface.BOLD);
-        label.setPadding(dp(4), dp(16), dp(4), dp(5));
-        root.addView(label);
-        return label;
-    }
-
     private EditText normalField(String hint, String value) {
         EditText e = new EditText(this);
         e.setHint(hint);
@@ -175,7 +177,9 @@ public class RecoveryActivity extends MainActivity {
         e.setPadding(dp(12), dp(10), dp(12), dp(10));
         e.setVerticalScrollBarEnabled(false);
         e.setHorizontalScrollBarEnabled(false);
-        root.addView(e, fieldParams());
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
+        p.setMargins(0, dp(2), 0, dp(3));
+        root.addView(e, p);
         return e;
     }
 
@@ -185,71 +189,124 @@ public class RecoveryActivity extends MainActivity {
         return e;
     }
 
-    /**
-     * A long field deliberately has no max-lines or fixed height. It expands as
-     * text is added, so there is only one scroll owner: pageScroll.
-     */
-    private EditText longField(String hint, String value) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setText(value == null ? "" : value);
-        e.setTextSize(16);
-        e.setTextColor(TEXT);
-        e.setHintTextColor(MUTED);
-        e.setGravity(Gravity.TOP | Gravity.START);
-        e.setSingleLine(false);
-        e.setHorizontallyScrolling(false);
-        e.setMinLines(5);
-        e.setInputType(InputType.TYPE_CLASS_TEXT |
+    private TextHolder addLongSection(String label, String emptyHint, String value) {
+        TextHolder holder = new TextHolder(value);
+
+        TextView title = txt(label, 18, TEXT);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
+        title.setPadding(dp(4), dp(16), dp(4), dp(5));
+        root.addView(title);
+
+        TextView preview = txt(previewText(holder.value, emptyHint), 16, TEXT);
+        preview.setGravity(Gravity.TOP | Gravity.START);
+        preview.setMinLines(3);
+        preview.setMaxLines(5);
+        preview.setPadding(dp(14), dp(12), dp(14), dp(12));
+        preview.setBackground(round(CARD));
+        LinearLayout.LayoutParams pp = new LinearLayout.LayoutParams(-1, -2);
+        pp.setMargins(0, 0, 0, dp(6));
+        root.addView(preview, pp);
+        holder.preview = preview;
+
+        Button editButton = btn("✏ Redigera " + label.toLowerCase());
+        full(editButton, 0);
+
+        View.OnClickListener open = v -> openFullScreenEditor(label, holder.value, newValue -> {
+            holder.value = newValue;
+            holder.preview.setText(previewText(newValue, emptyHint));
+        });
+        preview.setOnClickListener(open);
+        editButton.setOnClickListener(open);
+
+        return holder;
+    }
+
+    private String previewText(String value, String emptyHint) {
+        if (value == null || value.trim().isEmpty()) return emptyHint;
+        return value;
+    }
+
+    private void openFullScreenEditor(String titleText, String initialText, TextReceiver receiver) {
+        final Dialog dialog = new Dialog(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar_Fullscreen);
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), top(), dp(18), dp(16));
+        panel.setBackgroundColor(BG);
+
+        TextView heading = txt(titleText, 26, TEXT);
+        heading.setTypeface(null, android.graphics.Typeface.BOLD);
+        panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView help = txt("Skriv och svep upp eller ner direkt i textrutan. Texten rullar inne i rutan medan tangentbordet är öppet.", 14, MUTED);
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(-1, -2);
+        hp.setMargins(0, dp(2), 0, dp(8));
+        panel.addView(help, hp);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = btn("‹ Avbryt");
+        Button done = btn("✓ Klar");
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -2, 1f);
+        left.setMargins(0, 0, dp(5), 0);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1f);
+        right.setMargins(dp(5), 0, 0, 0);
+        actions.addView(cancel, left);
+        actions.addView(done, right);
+        LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2);
+        ap.setMargins(0, 0, 0, dp(8));
+        panel.addView(actions, ap);
+
+        final EditText editor = new EditText(this);
+        editor.setText(initialText == null ? "" : initialText);
+        editor.setTextSize(18);
+        editor.setTextColor(TEXT);
+        editor.setHint("Skriv här…");
+        editor.setHintTextColor(MUTED);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setSingleLine(false);
+        editor.setHorizontallyScrolling(false);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT |
                 InputType.TYPE_TEXT_FLAG_MULTI_LINE |
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        e.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
-        e.setPadding(dp(14), dp(12), dp(14), dp(12));
-        e.setBackground(round(CARD));
-        e.setVerticalScrollBarEnabled(false);
-        e.setHorizontalScrollBarEnabled(false);
-        e.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        editor.setPadding(dp(14), dp(14), dp(14), dp(14));
+        editor.setBackground(round(CARD));
+        editor.setVerticalScrollBarEnabled(false);
+        editor.setHorizontalScrollBarEnabled(false);
+        editor.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        editor.setMovementMethod(ScrollingMovementMethod.getInstance());
+        editor.setScrollContainer(true);
+        panel.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.setMargins(0, 0, 0, dp(8));
-        root.addView(e, p);
-
-        TextWatcher watcher = new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
-            @Override public void afterTextChanged(Editable s) {
-                if (e.hasFocus()) e.post(() -> revealCaretOnPage(e));
-            }
-        };
-        e.addTextChangedListener(watcher);
-        e.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) e.postDelayed(() -> revealCaretOnPage(e), 250);
-        });
-        e.setOnClickListener(v -> e.post(() -> revealCaretOnPage(e)));
-        return e;
-    }
-
-    private LinearLayout.LayoutParams fieldParams() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.setMargins(0, dp(2), 0, dp(3));
-        return p;
-    }
-
-    /**
-     * Ask the single outer ScrollView to reveal the caret line. The EditText
-     * itself never scrolls, which eliminates nested-scroll conflicts.
-     */
-    private void revealCaretOnPage(EditText editor) {
-        if (pageScroll == null || editor == null || editor.getLayout() == null) return;
-        try {
-            int offset = Math.max(0, Math.min(editor.getSelectionStart(), editor.length()));
-            int line = editor.getLayout().getLineForOffset(offset);
-            int top = editor.getLayout().getLineTop(line) + editor.getCompoundPaddingTop() - dp(28);
-            int bottom = editor.getLayout().getLineBottom(line) + editor.getCompoundPaddingTop() + dp(70);
-            Rect rect = new Rect(0, Math.max(0, top), Math.max(1, editor.getWidth()), bottom);
-            pageScroll.requestChildRectangleOnScreen(editor, rect, true);
-        } catch (Throwable ignored) {
+        dialog.setContentView(panel);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(BG));
+            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE |
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
         }
+
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        done.setOnClickListener(v -> {
+            receiver.onDone(editor.getText().toString());
+            dialog.dismiss();
+        });
+
+        dialog.setOnShowListener(d -> {
+            Window w = dialog.getWindow();
+            if (w != null) w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            editor.requestFocus();
+            editor.setSelection(editor.length());
+            editor.postDelayed(() -> {
+                try {
+                    InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                    if (imm != null) imm.showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT);
+                } catch (Throwable ignored) {}
+            }, 180);
+        });
+
+        dialog.show();
     }
 
     private void installCrashRecorder() {
