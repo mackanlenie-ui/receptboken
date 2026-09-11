@@ -2,18 +2,24 @@ package se.steffy.receptboken;
 
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.text.InputType;
 import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Stable launcher with a recipe editor that keeps long text in a separate
- * full-screen editor. The image picker is briefly disabled when the screen
- * opens so a previous tap cannot accidentally fall through onto "Välj bild".
+ * Stable launcher with an in-app full-screen editor for long recipe text.
+ * No second Activity is launched, so the recipe form stays alive underneath.
  */
 public class RecoveryActivity extends MainActivity {
 
@@ -27,11 +33,12 @@ public class RecoveryActivity extends MainActivity {
     private TextView ingredientsPreview;
     private TextView stepsPreview;
     private TextView tipsPreview;
+    private View activeEditorOverlay;
 
     @Override
     public void onCreate(android.os.Bundle state) {
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 1.19", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 1.20", Toast.LENGTH_SHORT).show();
     }
 
     @Override
@@ -146,22 +153,99 @@ public class RecoveryActivity extends MainActivity {
         Button editButton = btn("✏ Redigera " + label.toLowerCase());
         full(editButton, 0);
 
-        Runnable open = () -> openLongEditor(editorTitle, requestCode);
-        preview.setOnClickListener(v -> open.run());
-        editButton.setOnClickListener(v -> open.run());
+        View.OnClickListener open = v -> openLongEditor(editorTitle, requestCode);
+        preview.setOnClickListener(open);
+        editButton.setOnClickListener(open);
         return preview;
     }
 
     private void openLongEditor(String editorTitle, int requestCode) {
+        if (activeEditorOverlay != null) return;
+
         String text = requestCode == EDIT_INGREDIENTS ? currentIngredients
                 : requestCode == EDIT_STEPS ? currentSteps : currentTips;
+
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(BG);
+        overlay.setClickable(true);
+        overlay.setFocusable(true);
+        overlay.setFocusableInTouchMode(true);
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), top(), dp(18), dp(18));
+        panel.setBackgroundColor(BG);
+
+        TextView heading = txt(editorTitle, 25, TEXT);
+        heading.setTypeface(null, Typeface.BOLD);
+        panel.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+
+        TextView help = txt("Skriv direkt i rutan. När texten blir längre kan du rulla inne i rutan medan tangentbordet är öppet.", 14, MUTED);
+        LinearLayout.LayoutParams helpParams = new LinearLayout.LayoutParams(-1, -2);
+        helpParams.setMargins(0, dp(4), 0, dp(10));
+        panel.addView(help, helpParams);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        Button cancel = btn("‹ Avbryt");
+        Button done = btn("✓ Klar");
+        LinearLayout.LayoutParams left = new LinearLayout.LayoutParams(0, -2, 1f);
+        left.setMargins(0, 0, dp(6), 0);
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1f);
+        right.setMargins(dp(6), 0, 0, 0);
+        actions.addView(cancel, left);
+        actions.addView(done, right);
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, -2);
+        actionParams.setMargins(0, 0, 0, dp(10));
+        panel.addView(actions, actionParams);
+
+        EditText editor = new EditText(this);
+        editor.setText(text == null ? "" : text);
+        editor.setTextSize(18);
+        editor.setTextColor(TEXT);
+        editor.setHint("Skriv här…");
+        editor.setHintTextColor(MUTED);
+        editor.setGravity(Gravity.TOP | Gravity.START);
+        editor.setSingleLine(false);
+        editor.setHorizontallyScrolling(false);
+        editor.setVerticalScrollBarEnabled(true);
+        editor.setScrollbarFadingEnabled(false);
+        editor.setInputType(InputType.TYPE_CLASS_TEXT |
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE |
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
+        editor.setPadding(dp(14), dp(14), dp(14), dp(14));
+        editor.setBackground(round(CARD));
+        editor.setSelection(editor.getText().length());
+        panel.addView(editor, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        overlay.addView(panel, new FrameLayout.LayoutParams(-1, -1));
+        addContentView(overlay, new ViewGroup.LayoutParams(-1, -1));
+        activeEditorOverlay = overlay;
+
+        cancel.setOnClickListener(v -> closeEditorOverlay(editor));
+        done.setOnClickListener(v -> {
+            String value = editor.getText().toString();
+            if (requestCode == EDIT_INGREDIENTS) currentIngredients = value;
+            else if (requestCode == EDIT_STEPS) currentSteps = value;
+            else currentTips = value;
+            refreshPreviews();
+            closeEditorOverlay(editor);
+        });
+
+        editor.requestFocus();
+    }
+
+    private void closeEditorOverlay(EditText editor) {
         try {
-            Intent intent = new Intent(this, TextEditorActivity.class);
-            intent.putExtra(TextEditorActivity.EXTRA_TITLE, editorTitle);
-            intent.putExtra(TextEditorActivity.EXTRA_TEXT, text);
-            startActivityForResult(intent, requestCode);
-        } catch (Throwable error) {
-            Toast.makeText(this, "Kunde inte öppna textredigeraren", Toast.LENGTH_LONG).show();
+            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null && editor != null) imm.hideSoftInputFromWindow(editor.getWindowToken(), 0);
+        } catch (Exception ignored) {}
+
+        if (activeEditorOverlay != null) {
+            ViewGroup parent = (ViewGroup) activeEditorOverlay.getParent();
+            if (parent != null) parent.removeView(activeEditorOverlay);
+            activeEditorOverlay = null;
         }
     }
 
@@ -177,18 +261,13 @@ public class RecoveryActivity extends MainActivity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == EDIT_INGREDIENTS || requestCode == EDIT_STEPS || requestCode == EDIT_TIPS) {
-            if (resultCode == RESULT_OK && data != null) {
-                String value = data.getStringExtra(TextEditorActivity.EXTRA_TEXT);
-                if (value == null) value = "";
-                if (requestCode == EDIT_INGREDIENTS) currentIngredients = value;
-                else if (requestCode == EDIT_STEPS) currentSteps = value;
-                else currentTips = value;
-                refreshPreviews();
-            }
+    public void onBackPressed() {
+        if (activeEditorOverlay != null) {
+            ViewGroup parent = (ViewGroup) activeEditorOverlay.getParent();
+            if (parent != null) parent.removeView(activeEditorOverlay);
+            activeEditorOverlay = null;
             return;
         }
-        super.onActivityResult(requestCode, resultCode, data);
+        super.onBackPressed();
     }
 }
