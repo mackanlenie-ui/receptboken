@@ -1,0 +1,88 @@
+name: Bygg Min Dagbok v1.4.1
+on: [workflow_dispatch, push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Återskapa v1.4-grunden
+        run: |
+          base64 -d signing/min-dagbok-release.jks.b64 > signing/min-dagbok-release.jks
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          wf = Path('.github/workflows/build-apk.yml').read_text(encoding='utf-8')
+          marker = "          python3 - <<'PY'\n"
+          start = wf.index(marker) + len(marker)
+          end = wf.index("\n          PY", start)
+          Path('/tmp/prepare_v14.py').write_text(textwrap.dedent(wf[start:end]), encoding='utf-8')
+          PY
+          python3 /tmp/prepare_v14.py
+
+      - name: Lägg till full läsvy och version 1.4.1
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          java = Path('app/src/main/java/se/steffy/receptboken/DiaryMainActivity.java')
+          s = java.read_text(encoding='utf-8')
+
+          old = '    private Runnable deviceCredentialCancelled;'
+          new = old + '\n    private Entry readingEntry;'
+          if old not in s:
+              raise SystemExit('Kunde inte lägga till läsanteckning')
+          s = s.replace(old, new, 1)
+
+          old = '            case "settings": showSettings(); break;\n            default: showHome(); break;'
+          new = '            case "settings": showSettings(); break;\n            case "reader": if (readingEntry != null) showReader(readingEntry); else showHome(); break;\n            default: showHome(); break;'
+          if old not in s:
+              raise SystemExit('Kunde inte koppla läsvyn till sidrendering')
+          s = s.replace(old, new, 1)
+
+          old = '''        card.setOnClickListener(v -> {\n            try { openEditor(LocalDate.parse(e.date, iso)); } catch (Exception ignored) {}\n        });'''
+          new = '''        card.setOnClickListener(v -> showReader(e));'''
+          if old not in s:
+              raise SystemExit('Kunde inte ändra klick på anteckningskort')
+          s = s.replace(old, new, 1)
+
+          marker = '    private String preview(Entry e) {'
+          reader = '''    private void showReader(Entry source) {\n        if (source == null) { showHome(); return; }\n        Entry fresh = db.getByDate(source.date);\n        readingEntry = fresh != null ? fresh : source;\n        currentPage = "reader";\n        if (wide) buildShell();\n\n        LinearLayout c = pageColumn();\n\n        Button back = outlinedButton("←  Tillbaka");\n        LinearLayout.LayoutParams backLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(46));\n        backLp.bottomMargin = dp(14);\n        c.addView(back, backLp);\n        back.setOnClickListener(v -> showHome());\n\n        LinearLayout heading = new LinearLayout(this);\n        heading.setGravity(Gravity.CENTER_VERTICAL);\n        TextView mood = text(MOOD_EMOJI[clampMood(readingEntry.mood)], 28, false, text);\n        heading.addView(mood);\n        TextView date = text(formatDate(readingEntry.date), 14, true, muted);\n        LinearLayout.LayoutParams dateLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);\n        dateLp.leftMargin = dp(10);\n        heading.addView(date, dateLp);\n        if (readingEntry.favorite) heading.addView(text("★", 22, false, accent));\n        c.addView(heading);\n\n        String titleValue = readingEntry.title == null || readingEntry.title.trim().isEmpty() ? "Min dag" : readingEntry.title.trim();\n        TextView title = text(titleValue, wide ? 30 : 25, true, text);\n        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);\n        titleLp.topMargin = dp(12);\n        titleLp.bottomMargin = dp(14);\n        c.addView(title, titleLp);\n\n        LinearLayout bodyCard = card();\n        if (readingEntry.body == null || readingEntry.body.trim().isEmpty()) {\n            bodyCard.addView(text("Ingen text i den här anteckningen.", 15, false, muted));\n        } else {\n            TextView fullBody = text(readingEntry.body, wide ? 17 : 16, false, text);\n            fullBody.setTextIsSelectable(true);\n            fullBody.setLineSpacing(dp(3), 1.12f);\n            bodyCard.addView(fullBody, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));\n        }\n        c.addView(bodyCard, cardLp());\n\n        if (!readingEntry.photos.isEmpty()) {\n            c.addView(text("Bilder", 15, true, text));\n            HorizontalScrollView photosScroll = new HorizontalScrollView(this);\n            photosScroll.setHorizontalScrollBarEnabled(false);\n            LinearLayout photos = new LinearLayout(this);\n            photos.setPadding(0, dp(8), 0, dp(12));\n            for (String path : readingEntry.photos) {\n                FrameLayout frame = new FrameLayout(this);\n                frame.setBackground(round(surface2, 16, 1, divider));\n                ImageView image = new ImageView(this);\n                image.setScaleType(ImageView.ScaleType.CENTER_CROP);\n                try { image.setImageURI(Uri.fromFile(new File(path))); } catch (Exception ignored) {}\n                frame.addView(image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));\n                LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(190), dp(150));\n                fp.rightMargin = dp(10);\n                photos.addView(frame, fp);\n            }\n            photosScroll.addView(photos);\n            c.addView(photosScroll);\n        }\n\n        Button edit = primaryButton("✎  Redigera anteckning");\n        LinearLayout.LayoutParams editLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54));\n        editLp.topMargin = dp(12);\n        c.addView(edit, editLp);\n        edit.setOnClickListener(v -> {\n            try { openEditor(LocalDate.parse(readingEntry.date, iso)); } catch (Exception ignored) {}\n        });\n\n        TextView hint = text("Scrolla upp och ned för att läsa hela anteckningen.", 12, false, muted);\n        hint.setGravity(Gravity.CENTER);\n        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);\n        hintLp.topMargin = dp(12);\n        c.addView(hint, hintLp);\n\n        setPage("reader", pageScroll(c));\n    }\n\n'''
+          if marker not in s:
+              raise SystemExit('Kunde inte lägga in läsvyn')
+          s = s.replace(marker, reader + marker, 1)
+
+          s = s.replace('Min Dagbok  ·  version 1.4.0', 'Min Dagbok  ·  version 1.4.1')
+          java.write_text(s, encoding='utf-8')
+
+          gradle = Path('app/build.gradle')
+          g = gradle.read_text(encoding='utf-8')
+          g = g.replace("versionCode 2", "versionCode 3")
+          g = g.replace("versionName '1.4.0'", "versionName '1.4.1'")
+          gradle.write_text(g, encoding='utf-8')
+          PY
+
+      - name: Bygg Min Dagbok
+        run: gradle :app:assembleDebug
+
+      - name: Döp APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Min-Dagbok-v1.4.1.apk
+
+      - name: Verifiera APK och signering
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs Min-Dagbok-v1.4.1.apk
+          "$AAPT" dump badging Min-Dagbok-v1.4.1.apk | head -8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Min-Dagbok-v1.4.1
+          path: Min-Dagbok-v1.4.1.apk
