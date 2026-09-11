@@ -1,13 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:theme="@style/AppTheme" android:label="Receptboken" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:supportsRtl="true">
-        <provider
-            android:name=".RecipeSeedProvider"
-            android:authorities="se.steffy.receptboken.recipeseed"
-            android:exported="false" />
+    <application android:theme="@style/AppTheme" android:label="Mat &amp; Fika" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:supportsRtl="true">
+
 
         <activity
-            android:name=".RecoveryActivity"
+            android:name=".MatFikaActivity"
             android:screenOrientation="unspecified"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize"
             android:exported="true">
             <intent-filter>

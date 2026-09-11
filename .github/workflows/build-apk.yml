@@ -12,12 +12,44 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - run: gradle :app:assembleDebug :reklamskydd:assembleDebug
+      - run: gradle :app:assembleDebug :app:assembleRelease :app:lintDebug
+      - run: |
+          mkdir -p delivery
+          cp app/build/outputs/apk/release/app-release-unsigned.apk delivery/Mat-Fika-1.0.apk
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" delivery/apksigner.jar
       - uses: actions/upload-artifact@v4
         with:
-          name: Receptboken-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
-      - uses: actions/upload-artifact@v4
+          name: Mat-Fika-build
+          path: delivery/
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
         with:
-          name: ReklamSkydd-APK
-          path: reklamskydd/build/outputs/apk/debug/reklamskydd-debug.apk
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb install app/build/outputs/apk/debug/app-debug.apk
+            adb shell am instrument -w se.steffy.matfika/se.steffy.receptboken.SmokeTest > smoke-phone.txt
+            cat smoke-phone.txt
+            grep -q 'All smoke checks passed' smoke-phone.txt
+            adb pull /sdcard/Android/data/se.steffy.matfika/files/screenshots screenshots-phone
+            adb shell wm size 1600x1000
+            adb shell wm density 160
+            adb shell pm clear se.steffy.matfika
+            adb shell am instrument -w se.steffy.matfika/se.steffy.receptboken.SmokeTest > smoke-desktop.txt
+            cat smoke-desktop.txt
+            grep -q 'All smoke checks passed' smoke-desktop.txt
+            adb pull /sdcard/Android/data/se.steffy.matfika/files/screenshots screenshots-desktop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Mat-Fika-checks
+          path: |
+            screenshots-*
+            smoke-*.txt
+            app/build/reports/lint-results-debug.html
