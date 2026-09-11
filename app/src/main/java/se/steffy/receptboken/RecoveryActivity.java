@@ -9,16 +9,19 @@ import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 /**
- * Version 1.21 deliberately uses MainActivity's original recipe editor again.
- * The only editor change is a fixed-height, internally scrollable EditText for
- * long text. No overlay, dialog or second Activity is involved.
+ * Version 1.22 works around a Samsung/One UI scrollbar rendering crash.
+ * Long recipe fields still scroll internally, but no scrollbar drawable is
+ * requested from Android.
  */
 public class RecoveryActivity extends MainActivity {
 
@@ -29,8 +32,27 @@ public class RecoveryActivity extends MainActivity {
     public void onCreate(Bundle state) {
         installCrashRecorder();
         super.onCreate(state);
-        Toast.makeText(this, "Receptboken 1.21", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Receptboken 1.22", Toast.LENGTH_SHORT).show();
         getWindow().getDecorView().postDelayed(this::showSavedCrashIfAny, 500);
+    }
+
+    @Override
+    void base() {
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        // Workaround for the One UI/Android crash in View.onDrawScrollBars().
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), top(), dp(18), dp(28));
+        root.setBackgroundColor(BG);
+        scroll.addView(root);
+        setContentView(scroll);
     }
 
     @Override
@@ -38,27 +60,27 @@ public class RecoveryActivity extends MainActivity {
         EditText editor = super.field(hint, val, multi);
         if (!multi) return editor;
 
-        // Keep long recipe text in a normal Android EditText. A fixed height
-        // makes Android scroll the contents inside the field as the cursor moves.
+        // The field still scrolls internally, but the visual scrollbar is
+        // disabled because One UI is returning a null ScrollBarDrawable.
         editor.setMinLines(6);
         editor.setMaxLines(6);
         editor.setGravity(Gravity.TOP | Gravity.START);
         editor.setSingleLine(false);
         editor.setHorizontallyScrolling(false);
-        editor.setVerticalScrollBarEnabled(true);
-        editor.setScrollbarFadingEnabled(false);
-        editor.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        editor.setVerticalScrollBarEnabled(false);
+        editor.setHorizontalScrollBarEnabled(false);
+        editor.setOverScrollMode(View.OVER_SCROLL_NEVER);
         editor.setImeOptions(EditorInfo.IME_FLAG_NO_EXTRACT_UI);
 
-        // While the user drags inside a long field, let that field consume the
-        // vertical scroll instead of the surrounding page ScrollView.
+        // Let the EditText consume vertical drag gestures while the finger is
+        // inside it, so the text itself can be scrolled instead of the page.
         editor.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN ||
                     event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                v.getParent().requestDisallowInterceptTouchEvent(true);
+                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(true);
             } else if (event.getActionMasked() == MotionEvent.ACTION_UP ||
                     event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                v.getParent().requestDisallowInterceptTouchEvent(false);
+                if (v.getParent() != null) v.getParent().requestDisallowInterceptTouchEvent(false);
             }
             return false;
         });
@@ -102,6 +124,8 @@ public class RecoveryActivity extends MainActivity {
         text.setText(report);
         text.setTextSize(12);
         text.setTextIsSelectable(true);
+        text.setVerticalScrollBarEnabled(false);
+        text.setHorizontalScrollBarEnabled(false);
         text.setPadding(dp(16), dp(10), dp(16), dp(10));
 
         new AlertDialog.Builder(this)
