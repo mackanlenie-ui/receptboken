@@ -1,0 +1,84 @@
+name: Bygg Min Dagbok v1.4.2
+on: [workflow_dispatch, push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Återskapa v1.4.1-grunden
+        run: |
+          base64 -d signing/min-dagbok-release.jks.b64 > signing/min-dagbok-release.jks
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          def run_python_block(path, section):
+              wf = Path(path).read_text(encoding='utf-8')
+              section_pos = wf.index(section)
+              marker = "          python3 - <<'PY'\n"
+              start = wf.index(marker, section_pos) + len(marker)
+              end = wf.index("\n          PY", start)
+              code = textwrap.dedent(wf[start:end])
+              exec(compile(code, path, 'exec'), {'__name__': '__main__'})
+
+          run_python_block('.github/workflows/build-apk.yml', '- name: Förbered Min Dagbok v1.4.0')
+          run_python_block('.github/workflows/build-apk-v141.yml', '- name: Lägg till full läsvy och version 1.4.1')
+          PY
+
+      - name: Förbättra scrollning i skrivläget
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          java = Path('app/src/main/java/se/steffy/receptboken/DiaryMainActivity.java')
+          s = java.read_text(encoding='utf-8')
+
+          old = '''        EditText body = editField("Vad har hänt idag? Skriv precis så mycket du vill…", true);\n        body.setText(editorEntry.body);\n        body.setGravity(Gravity.TOP | Gravity.START);\n        body.setMinLines(wide ? 14 : 10);\n        LinearLayout.LayoutParams bodyLp = fieldLp(wide ? dp(360) : dp(300));\n        bodyLp.bottomMargin = dp(18);\n        c.addView(body, bodyLp);\n        body.addTextChangedListener(simpleWatcher(s -> { editorEntry.body = s; scheduleAutosave(); }));'''
+
+          new = '''        EditText body = editField("Vad har hänt idag? Skriv precis så mycket du vill…", true);\n        body.setText(editorEntry.body);\n        body.setGravity(Gravity.TOP | Gravity.START);\n        body.setMinLines(wide ? 14 : 10);\n        body.setMaxLines(Integer.MAX_VALUE);\n        body.setVerticalScrollBarEnabled(false);\n        body.setNestedScrollingEnabled(false);\n        body.setOverScrollMode(View.OVER_SCROLL_NEVER);\n        body.setHorizontallyScrolling(false);\n        body.setMinHeight(wide ? dp(360) : dp(300));\n        LinearLayout.LayoutParams bodyLp = new LinearLayout.LayoutParams(\n                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);\n        bodyLp.bottomMargin = dp(18);\n        c.addView(body, bodyLp);\n        body.addTextChangedListener(simpleWatcher(value -> {\n            editorEntry.body = value;\n            scheduleAutosave();\n            body.post(() -> {\n                android.text.Layout layout = body.getLayout();\n                int cursor = body.getSelectionStart();\n                if (layout != null && cursor >= 0) {\n                    int safeCursor = Math.min(cursor, body.length());\n                    int line = layout.getLineForOffset(safeCursor);\n                    int top = Math.max(0, layout.getLineTop(line) - dp(56));\n                    int bottom = layout.getLineBottom(line) + dp(110);\n                    body.requestRectangleOnScreen(\n                            new android.graphics.Rect(0, top, Math.max(body.getWidth(), 1), bottom), true);\n                }\n            });\n        }));'''
+
+          if old not in s:
+              raise SystemExit('Kunde inte hitta skrivfältet som ska förbättras')
+          s = s.replace(old, new, 1)
+
+          old_end = '        setPage("editor", pageScroll(c));'
+          new_end = '''        Space editorBottomSpace = new Space(this);\n        c.addView(editorBottomSpace, new LinearLayout.LayoutParams(1, dp(120)));\n\n        ScrollView editorScroll = pageScroll(c);\n        editorScroll.setSmoothScrollingEnabled(true);\n        editorScroll.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);\n        setPage("editor", editorScroll);'''
+          if old_end not in s:
+              raise SystemExit('Kunde inte förbättra sidscrollningen')
+          s = s.replace(old_end, new_end, 1)
+
+          s = s.replace('Min Dagbok  ·  version 1.4.1', 'Min Dagbok  ·  version 1.4.2')
+          java.write_text(s, encoding='utf-8')
+
+          gradle = Path('app/build.gradle')
+          g = gradle.read_text(encoding='utf-8')
+          g = g.replace("versionCode 3", "versionCode 4")
+          g = g.replace("versionName '1.4.1'", "versionName '1.4.2'")
+          gradle.write_text(g, encoding='utf-8')
+          PY
+
+      - name: Bygg Min Dagbok
+        run: gradle :app:assembleDebug
+
+      - name: Döp APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Min-Dagbok-v1.4.2.apk
+
+      - name: Verifiera APK och signering
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          AAPT=$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs Min-Dagbok-v1.4.2.apk
+          "$AAPT" dump badging Min-Dagbok-v1.4.2.apk | head -8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Min-Dagbok-v1.4.2
+          path: Min-Dagbok-v1.4.2.apk
