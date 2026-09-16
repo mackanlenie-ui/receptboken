@@ -13,6 +13,27 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Återskapa v1.6.0-grunden
+        run: |
+          base64 -d signing/min-dagbok-release.jks.b64 > signing/min-dagbok-release.jks
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          def run_python_block(path, section):
+              wf = Path(path).read_text(encoding='utf-8')
+              section_pos = wf.index(section)
+              marker = "          python3 - <<'PY'\n"
+              start = wf.index(marker, section_pos) + len(marker)
+              end = wf.index("\n          PY", start)
+              code = textwrap.dedent(wf[start:end])
+              exec(compile(code, path, 'exec'), {'__name__': '__main__'})
+
+          run_python_block('.github/workflows/build-apk-v142.yml', '- name: Återskapa v1.4.1-grunden')
+          run_python_block('.github/workflows/build-apk-v142.yml', '- name: Förbättra scrollning i skrivläget')
+          PY
+          python3 scripts/v150_patch.py
+          python3 scripts/v160_patch.py
       - name: Lägg till JUnit
         run: |
           python3 - <<'PY'
