@@ -28,6 +28,24 @@ public final class BackupManager {
     private BackupManager() {}
 
     public static void exportBackup(Context context, DiaryDb db, Uri target) throws Exception {
+        OutputStream raw = context.getContentResolver().openOutputStream(target, "w");
+        if (raw == null) throw new IllegalStateException("Kunde inte öppna backupfilen för skrivning");
+        try (OutputStream out = raw) {
+            writeBackup(db, out);
+        }
+    }
+
+    public static void exportBackup(Context context, DiaryDb db, File target) throws Exception {
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new IllegalStateException("Kunde inte skapa backupmappen");
+        }
+        try (OutputStream out = new FileOutputStream(target, false)) {
+            writeBackup(db, out);
+        }
+    }
+
+    private static void writeBackup(DiaryDb db, OutputStream raw) throws Exception {
         JSONArray entries = new JSONArray();
         HashMap<String, String> archivedFiles = new HashMap<>();
         int imageCounter = 0;
@@ -60,10 +78,7 @@ public final class BackupManager {
         root.put("created", System.currentTimeMillis());
         root.put("entries", entries);
 
-        OutputStream raw = context.getContentResolver().openOutputStream(target, "w");
-        if (raw == null) throw new IllegalStateException("Kunde inte öppna backupfilen för skrivning");
-
-        try (OutputStream out = raw; ZipOutputStream zip = new ZipOutputStream(out)) {
+        try (ZipOutputStream zip = new ZipOutputStream(raw)) {
             zip.putNextEntry(new ZipEntry("entries.json"));
             zip.write(root.toString(2).getBytes(StandardCharsets.UTF_8));
             zip.closeEntry();
@@ -81,23 +96,47 @@ public final class BackupManager {
         }
     }
 
+    public static int validateBackup(File source) throws Exception {
+        byte[] bytes;
+        try (InputStream in = new FileInputStream(source)) {
+            bytes = readAll(in);
+        }
+        return validateBackupBytes(bytes);
+    }
+
+    private static int validateBackupBytes(byte[] sourceBytes) throws Exception {
+        if (sourceBytes.length == 0) throw new IllegalArgumentException("Backupfilen är tom");
+        ParsedBackup parsed = parseBackupBytes(sourceBytes, 0);
+        JSONObject root = validatedRoot(parsed);
+        JSONArray arr = root.optJSONArray("entries");
+        if (arr == null) throw new IllegalArgumentException("Backupen saknar anteckningar");
+        if (arr.length() == 0) throw new IllegalArgumentException("Backupen innehåller inga sparade anteckningar");
+        return arr.length();
+    }
+
     public static int importBackup(Context context, DiaryDb db, Uri source) throws Exception {
         InputStream raw = context.getContentResolver().openInputStream(source);
         if (raw == null) throw new IllegalArgumentException("Kunde inte öppna den valda backupfilen");
-
         byte[] sourceBytes;
         try (InputStream in = raw) {
             sourceBytes = readAll(in);
         }
+        return importBackupBytes(context, db, sourceBytes);
+    }
+
+    public static int importBackup(Context context, DiaryDb db, File source) throws Exception {
+        byte[] sourceBytes;
+        try (InputStream in = new FileInputStream(source)) {
+            sourceBytes = readAll(in);
+        }
+        return importBackupBytes(context, db, sourceBytes);
+    }
+
+    private static int importBackupBytes(Context context, DiaryDb db, byte[] sourceBytes) throws Exception {
         if (sourceBytes.length == 0) throw new IllegalArgumentException("Backupfilen är tom");
 
         ParsedBackup parsed = parseBackupBytes(sourceBytes, 0);
-        JSONObject root = new JSONObject(parsed.json);
-        String format = root.optString("format", "");
-        if (!"MinDagbokBackup".equals(format)) {
-            throw new IllegalArgumentException("Filen är inte en säkerhetskopia från Min Dagbok");
-        }
-
+        JSONObject root = validatedRoot(parsed);
         JSONArray arr = root.optJSONArray("entries");
         if (arr == null) throw new IllegalArgumentException("Backupen saknar anteckningar");
         if (arr.length() == 0) throw new IllegalArgumentException("Backupen innehåller inga sparade anteckningar");
@@ -153,12 +192,20 @@ public final class BackupManager {
             }
             return restored.size();
         } catch (Exception e) {
-            // Städa endast bilder som skapades under ett misslyckat importförsök.
             for (File f : newlyWrittenImages) {
                 try { if (f.exists()) f.delete(); } catch (Exception ignored) {}
             }
             throw e;
         }
+    }
+
+    private static JSONObject validatedRoot(ParsedBackup parsed) throws Exception {
+        JSONObject root = new JSONObject(parsed.json);
+        String format = root.optString("format", "");
+        if (!"MinDagbokBackup".equals(format)) {
+            throw new IllegalArgumentException("Filen är inte en säkerhetskopia från Min Dagbok");
+        }
+        return root;
     }
 
     private static ParsedBackup parseBackupBytes(byte[] bytes, int depth) throws Exception {
@@ -200,7 +247,6 @@ public final class BackupManager {
             return new ParsedBackup(new String(jsonBytes, StandardCharsets.UTF_8), images);
         }
 
-        // Vissa filhanterare kan lägga en zip inuti en annan zip. Acceptera det också.
         for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
             String lower = entry.getKey().toLowerCase();
             if (lower.endsWith(".zip") || lower.endsWith(".dagbokzip")) {
